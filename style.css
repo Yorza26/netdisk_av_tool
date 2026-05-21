@@ -2,6 +2,8 @@
    JAV Manager — Dark Theme Stylesheet
    ═══════════════════════════════════════════════════ */
 
+.hidden { display: none !important; }
+
 :root {
   --bg:          #0d0d1a;
   --sidebar-bg:  #12122a;

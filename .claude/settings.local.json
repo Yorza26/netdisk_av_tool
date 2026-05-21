@@ -7,7 +7,12 @@
       "PowerShell(netstat *)",
       "PowerShell(where python; python --version)",
       "PowerShell(Get-Command *)",
-      "PowerShell(python -c \"import sys; print\\(sys.executable\\)\")"
+      "PowerShell(python -c \"import sys; print\\(sys.executable\\)\")",
+      "Bash(curl -s http://localhost:5001/)",
+      "Bash(curl -s -o /dev/null -w \"data.js: %{http_code} %{size_download} bytes\\\\n\" http://localhost:5001/data.js)",
+      "Bash(curl -s -o /dev/null -w \"app.js: %{http_code} %{size_download} bytes\\\\n\" http://localhost:5001/app.js)",
+      "Bash(curl -s -o /dev/null -w \"chart.js: %{http_code} %{size_download} bytes\\\\n\" http://localhost:5001/chart.js)",
+      "Bash(kill %1)"
     ]
   }
 }

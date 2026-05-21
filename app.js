@@ -39,7 +39,6 @@ async function init() {
 
   // Fallback: try fetching data.js directly (also works over HTTP, fails on file://)
   try {
-    showLoading('Loading data.js…');
     const r = await fetch('data.js?' + Date.now());
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const text = await r.text();
@@ -136,14 +135,19 @@ function renderDashboard() {
 function renderBarChart(canvasId, labels, values, unit, colorKeys) {
   const canvas = el(canvasId);
   if (!canvas) return;
-  canvas.style.height = `${Math.max(260, labels.length * 24)}px`;
-
-  const ctx = canvas.getContext('2d');
 
   const existing = Chart.getChart(canvas);
   if (existing) existing.destroy();
 
-  new Chart(ctx, {
+  // Fix explicit pixel size — prevents Chart.js responsive resize loop
+  const w = canvas.parentElement.clientWidth || 500;
+  const h = Math.max(260, labels.length * 28);
+  canvas.width  = w;
+  canvas.height = h;
+  canvas.style.width  = w + 'px';
+  canvas.style.height = h + 'px';
+
+  new Chart(canvas, {
     type: 'bar',
     data: {
       labels,
@@ -155,9 +159,9 @@ function renderBarChart(canvasId, labels, values, unit, colorKeys) {
       }],
     },
     options: {
+      animation: false,
+      responsive: false,
       indexAxis: 'y',
-      responsive: true,
-      maintainAspectRatio: false,
       plugins: {
         legend: { display: false },
         tooltip: { callbacks: { label: ctx => ` ${ctx.raw} ${unit}` } },
