@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python *)",
+      "PowerShell(cd D:\\\\Playground\\\\jav_tool; Get-ChildItem index.html, data.js, app.js, start.bat | Select-Object Name, @{N='Size';E={'{0:N0} KB' -f \\($_.Length/1KB\\)}})",
+      "PowerShell(cd D:\\\\Playground\\\\jav_tool; Get-ChildItem index.html, data.js, app.js, start.bat | ForEach-Object { \"$\\($_.Name\\): $\\([math]::Round\\($_.Length/1KB, 1\\)\\) KB\" })",
+      "PowerShell(netstat *)",
+      "PowerShell(where python; python --version)",
+      "PowerShell(Get-Command *)",
+      "PowerShell(python -c \"import sys; print\\(sys.executable\\)\")"
+    ]
+  }
+}
