@@ -176,7 +176,8 @@ function applyFilters() {
   let items = allItems.filter(item => {
     if (javOnly && !item.is_jav) return false;
     if (query) {
-      const hay = (item.name + ' ' + (item.bango || '')).toLowerCase();
+      const hay = (item.name + ' ' + (item.bango || '') + ' ' +
+                   (item.title || '') + ' ' + (item.actresses || []).join(' ')).toLowerCase();
       return hay.includes(query);
     }
     return true;
@@ -227,13 +228,31 @@ function createItemCard(item) {
   badge.style.border       = `1px solid ${item.is_jav ? seriesColor(series, 0.45) : 'transparent'}`;
   card.appendChild(badge);
 
-  // Info
+  // Cover thumbnail (embedded from metadata)
+  if (item.cover) {
+    const thumb = document.createElement('img');
+    thumb.className = 'item-thumb';
+    thumb.src = item.cover;
+    thumb.alt = '';
+    thumb.loading = 'lazy';
+    thumb.onerror = function() { this.style.display = 'none'; };
+    card.appendChild(thumb);
+  }
+
+  // Info — show javbus title if available, folder name as fallback/tooltip
+  const actressHtml = item.actresses?.length
+    ? `<div class="item-actresses">${
+        item.actresses.slice(0, 3).map(a => `<span class="actress-tag">${esc(a)}</span>`).join('')
+      }${item.actresses.length > 3 ? `<span class="actress-tag">+${item.actresses.length - 3}</span>` : ''}</div>`
+    : '';
+
   const info = document.createElement('div');
   info.className = 'item-info';
   info.innerHTML = `
     <div class="item-bango">${esc(item.bango || '(no bango)')}</div>
-    <div class="item-name" title="${esc(item.name)}">${esc(item.name)}</div>
+    <div class="item-name" title="${esc(item.name)}">${esc(item.title || item.name)}</div>
     <div class="item-meta">${item.file_count} file(s) · ${item.video_count} video(s)</div>
+    ${actressHtml}
   `;
   card.appendChild(info);
 
@@ -352,12 +371,27 @@ function closeDetail() {
 
 function renderDetailShell(item) {
   const isMarked = markedItems.has(item.path);
+
+  // Build metadata block from embedded fields (populated by scan.py via javbus)
+  let metaHtml = '';
+  if (item.is_jav && (item.cover || item.title || item.actresses?.length)) {
+    const actressHtml = item.actresses?.length
+      ? `<div class="jav-actresses">👤 ${item.actresses.map(a => `<span class="actress-tag">${esc(a)}</span>`).join('')}</div>`
+      : '';
+    metaHtml = `
+      <div class="jav-info-card">
+        ${item.cover ? `<img class="jav-cover" src="${esc(item.cover)}" alt="cover" loading="lazy" onerror="this.style.display='none'">` : ''}
+        <div class="jav-meta">
+          ${item.title ? `<div class="jav-title">${esc(item.title)}</div>` : ''}
+          ${actressHtml}
+        </div>
+      </div>`;
+  }
+
   el('detail-body').innerHTML = `
     <div class="detail-bango">${esc(item.bango || '(no bango)')}</div>
 
-    ${!item.bango
-      ? '<div class="jav-not-found">No bango detected — cannot look up on Javbus.</div>'
-      : ''}
+    ${metaHtml}
 
     <div class="detail-section-title">Files on disk</div>
     <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">

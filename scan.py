@@ -3,10 +3,13 @@
 """
 JAV Collection Scanner  —  stdlib only, no pip install needed
 Queries Everything's HTTP API and saves a snapshot to data.js.
+Fetches metadata (cover, title, actresses) from jav321.com — no cookies needed.
 Then open index.html directly in your browser — no server needed.
 
 Usage:
-    python scan.py
+    python scan.py                          # full scan + metadata fetch
+    python scan.py --skip-meta              # fast scan, no metadata
+    python scan.py --test-bango MIDE-332    # test metadata fetch for one bango
 """
 
 import urllib.request
@@ -17,6 +20,7 @@ import re
 import os
 import sys
 import io
+import time
 from datetime import datetime
 
 # ── Windows console UTF-8 fix ──────────────────
@@ -33,7 +37,10 @@ from collections import defaultdict
 # ─────────────────────────────────────────────
 ROOT_DIR        = r"E:\115\云下载"
 OUTPUT_FILE     = "data.js"
-EVERYTHING_PORT = 80        # Change if you changed it in Everything's options
+META_CACHE_FILE = "meta_cache.json"
+META_PER_RUN    = 100    # max new items to fetch per scan run
+META_DELAY      = 1.0    # seconds between metadata requests (be polite)
+EVERYTHING_PORT = 80     # Change if you changed it in Everything's options
 
 # ─────────────────────────────────────────────
 # Constants
@@ -358,16 +365,190 @@ def process_results(raw: list, root_dir: str) -> dict:
 
 
 # ─────────────────────────────────────────────
+# jav321.com metadata fetching
+# (No cookies needed — cover images from pics.dmm.co.jp are public)
+# ─────────────────────────────────────────────
+
+_META_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/124.0.0.0 Safari/537.36')
+
+
+def _jav321_id(bango: str) -> str:
+    """Convert MIDE-332 → mide00332, DOCP-175 → docp00175 (jav321 URL format)."""
+    m = re.match(r'^([A-Za-z]+)-?(\d+)', bango.strip())
+    if m:
+        return m.group(1).lower() + m.group(2).zfill(5)
+    return bango.lower().replace('-', '')
+
+
+def _fetch_one_meta(bango: str) -> dict:
+    """Fetch cover, title, actresses from jav321.com for a single bango.
+    No login/cookies needed. Cover images served by pics.dmm.co.jp (public).
+    Returns {} on not-found, {'_err': msg} on network error."""
+    vid = _jav321_id(bango)
+    url = f"https://www.jav321.com/video/{vid}"
+    headers = {
+        'User-Agent':      _META_UA,
+        'Accept-Language': 'ja,zh-TW;q=0.9,zh;q=0.8,en;q=0.7',
+    }
+
+    html = ''
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=12) as r:
+            html = r.read().decode('utf-8', errors='replace')
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            # Direct URL 404 — try POST search as fallback
+            try:
+                req2 = urllib.request.Request(
+                    "https://www.jav321.com/search",
+                    data=urllib.parse.urlencode({'sn': bango}).encode(),
+                    headers={**headers,
+                             'Content-Type': 'application/x-www-form-urlencoded',
+                             'Referer':      'https://www.jav321.com/'},
+                )
+                with urllib.request.urlopen(req2, timeout=15) as r2:
+                    if '/video/' not in r2.url:
+                        return {}   # search didn't land on a video page
+                    html = r2.read().decode('utf-8', errors='replace')
+            except Exception as e2:
+                return {'_err': str(e2)}
+        else:
+            return {'_err': str(e)}
+    except Exception as exc:
+        return {'_err': str(exc)}
+
+    if not html:
+        return {}
+
+    # ── Title: <h3>TITLE<small>bango actress</small></h3> ──
+    m = re.search(r'<h3>([^<]+)<small>', html)
+    title = m.group(1).strip() if m else ''
+
+    # ── Cover: first DMM ps.jpg → upgrade to pl.jpg (large ~160-180 KB) ──
+    cover = ''
+    m = re.search(r'src="(https?://pics\.dmm\.co\.jp/[^"]+ps\.jpg)"', html)
+    if m:
+        cover = m.group(1).replace('ps.jpg', 'pl.jpg')
+        cover = re.sub(r'(?<=\.jp)//', '/', cover)   # fix double slash
+
+    # ── Actresses: /star/NNN/N links (deduplicated) ──
+    actresses = list(dict.fromkeys(
+        re.findall(r'href="/star/\d+/\d+">([^<]+)</a>', html)
+    ))
+
+    return {'cover': cover, 'title': title, 'actresses': actresses}
+
+
+def load_meta_cache() -> dict:
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(here, META_CACHE_FILE)
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_meta_cache(cache: dict) -> None:
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(here, META_CACHE_FILE)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
+
+
+def enrich_with_meta(items: list, cache: dict) -> int:
+    """Fetch missing metadata from jav321.com (up to META_PER_RUN items).
+    Saves cache after every successful fetch. Handles Ctrl+C gracefully.
+    Returns number of newly fetched items."""
+    need_fetch = [e for e in items if e.get('is_jav') and e.get('bango')
+                  and e['bango'] not in cache]
+    ok = fail = 0
+    total_needed = len(need_fetch)
+    limit        = min(total_needed, META_PER_RUN)
+
+    if total_needed:
+        remaining = total_needed - limit
+        print(f"  Fetching metadata from jav321.com: {limit} new items"
+              + (f" ({remaining} more on next run)" if remaining else "") + " ...")
+        print("  Press Ctrl+C to stop early (progress is saved).")
+    else:
+        cached = sum(1 for e in items if e.get('is_jav') and e.get('bango') and e['bango'] in cache)
+        print(f"  All metadata cached ({cached} items)")
+
+    try:
+        for entry in need_fetch:
+            if ok + fail >= limit:
+                break
+            bango = entry['bango']
+            meta  = _fetch_one_meta(bango)
+            n     = ok + fail + 1
+
+            if meta.get('cover') or meta.get('title'):
+                cache[bango] = meta
+                save_meta_cache(cache)   # persist after every success
+                ok += 1
+                status = '✓'
+                if meta.get('cover'):
+                    status += ' cover'
+                if meta.get('actresses'):
+                    status += f' [{", ".join(meta["actresses"][:2])}]'
+            elif meta.get('_err'):
+                fail += 1
+                status = f"✗ ({meta['_err'][:60]})"
+            else:
+                # Not found on jav321 — cache the miss so we don't retry forever
+                cache[bango] = {}
+                save_meta_cache(cache)
+                fail += 1
+                status = '– (not on jav321)'
+
+            print(f"  [{n}/{limit}] {status}  {bango}")
+            if n < limit:
+                time.sleep(META_DELAY)
+
+    except KeyboardInterrupt:
+        print(f"\n  Interrupted — {ok} fetched, cache saved.")
+
+    if ok + fail:
+        print(f"  Done: {ok} with metadata, {fail} not found/errors.")
+
+    # Apply cache to all items
+    for entry in items:
+        bango = entry.get('bango')
+        if bango and bango in cache:
+            meta = cache[bango]
+            entry['cover']     = meta.get('cover', '')
+            entry['title']     = meta.get('title', '')
+            entry['actresses'] = meta.get('actresses', [])
+
+    return ok
+
+
+# ─────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────
 
-def main():
+def _write_data_js(data: dict) -> None:
+    with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
+        f.write('// Auto-generated by scan.py — do not edit manually\n')
+        f.write(f'// Scanned: {data["scan_time"]}\n')
+        f.write('window.__javData__ = ')
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write(';\n')
+
+
+def main(skip_meta: bool = False):
     print("=" * 55)
     print("  JAV Collection Scanner  (stdlib only)")
     print("=" * 55)
     print(f"  Root   : {ROOT_DIR}")
     print(f"  Port   : {EVERYTHING_PORT}")
     print(f"  Output : {OUTPUT_FILE}")
+    if skip_meta:
+        print("  Meta   : SKIPPED (--skip-meta)")
     print("=" * 55)
     print()
 
@@ -382,16 +563,10 @@ def main():
     print(f"Processing {len(raw)} items ...")
     data = process_results(raw, ROOT_DIR)
 
-    # ── Save data.js (readable, for reference / HTTP serving) ────────
-    with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
-        f.write('// Auto-generated by scan.py — do not edit manually\n')
-        f.write(f'// Scanned: {data["scan_time"]}\n')
-        f.write('window.__javData__ = ')
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.write(';\n')
-
+    # ── Write data.js immediately so the browser is usable right away ──
+    _write_data_js(data)
     s = data['statistics']
-    print(f"\n[OK] Scan complete")
+    print(f"\n[OK] Scan complete — {OUTPUT_FILE} written (open index.html now)")
     print(f"   Directories : {s['total_items']}")
     print(f"   JAV         : {s['jav_count']}")
     print(f"   Non-JAV     : {s['non_jav_count']}")
@@ -401,9 +576,58 @@ def main():
     for series, count in list(s['series_count'].items())[:15]:
         print(f"   {'|' * min(count, 35):<35}  {series}  ({count})")
     print()
-    print("   Done — open index.html in your browser.")
+
+    if skip_meta:
+        print("   Metadata fetch skipped (--skip-meta). Run without flag to fetch covers.")
+        print()
+        return
+
+    # ── Enrich with jav321 metadata (cover / title / actresses) ──────
+    print("Enriching with metadata ...")
+    meta_cache = load_meta_cache()
+    fetched = enrich_with_meta(data['items'], meta_cache)
+
+    # ── Re-write data.js with metadata embedded ───────────────────────
+    if fetched:
+        _write_data_js(data)
+        print(f"  {OUTPUT_FILE} updated with {fetched} new covers — reload index.html.")
+    else:
+        # Still apply existing cache entries (no new fetches needed)
+        covered = sum(1 for e in data['items'] if e.get('cover'))
+        if covered:
+            _write_data_js(data)
+            print(f"  {OUTPUT_FILE} updated with {covered} cached covers — reload index.html.")
     print()
 
 
+
+def test_meta_bango(bango: str) -> None:
+    """Fetch and print metadata for a single bango from jav321.com."""
+    print(f"Fetching metadata for: {bango}  (jav321 ID: {_jav321_id(bango)})")
+    meta = _fetch_one_meta(bango)
+    if meta.get('_err'):
+        print(f"  Error   : {meta['_err']}")
+    elif not meta:
+        print("  Not found on jav321.com")
+    else:
+        print(f"  Title    : {meta.get('title', '(none)')}")
+        print(f"  Cover    : {meta.get('cover', '(none)')}")
+        print(f"  Actresses: {meta.get('actresses', [])}")
+
+
 if __name__ == '__main__':
-    main()
+    args = sys.argv[1:]
+    if len(args) == 2 and args[0] == '--test-meta':
+        # Legacy: kept for compat, now just tests live fetch via jav321
+        test_meta_bango(args[1])
+    elif len(args) == 2 and args[0] == '--test-bango':
+        test_meta_bango(args[1])
+    elif args == ['--skip-meta']:
+        main(skip_meta=True)
+    elif not args:
+        main()
+    else:
+        print("Usage:")
+        print("  python scan.py                          # full scan + metadata fetch")
+        print("  python scan.py --skip-meta              # fast scan, no metadata")
+        print("  python scan.py --test-bango <BANGO>     # test jav321 fetch for one bango")

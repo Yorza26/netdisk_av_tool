@@ -305,10 +305,21 @@ select {
   padding: 0 4px;
 }
 
+.item-thumb {
+  width: 86px;
+  min-width: 86px;
+  height: 54px;
+  object-fit: cover;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
 .item-info { flex: 1; min-width: 0; }
 .item-bango { font-size: 13px; font-weight: 700; color: var(--accent-blue); margin-bottom: 2px; }
 .item-name  { font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .item-meta  { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
+.item-actresses { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 4px; }
 
 .item-size {
   font-size: 13px;
@@ -475,6 +486,17 @@ tbody td { padding: 9px 14px; }
 .path-link { color: inherit; text-decoration: none; }
 .path-link:hover { color: var(--accent); text-decoration: underline; cursor: pointer; }
 .file-entry .file-size { white-space: nowrap; }
+
+/* ── JAV info card ───────────────────────────── */
+.jav-info-loading { font-size: 12px; color: var(--text-muted); margin: 10px 0; }
+.jav-info-error   { font-size: 12px; color: var(--text-muted); margin: 10px 0; }
+.jav-info-card    { display: flex; gap: 12px; margin: 12px 0; align-items: flex-start; }
+.jav-cover        { width: 120px; flex-shrink: 0; border-radius: 4px; border: 1px solid var(--border); }
+.jav-meta         { flex: 1; min-width: 0; }
+.jav-title        { font-size: 13px; font-weight: 600; color: var(--text); line-height: 1.4; margin-bottom: 8px; }
+.jav-actresses    { display: flex; flex-wrap: wrap; gap: 4px; }
+.actress-tag      { font-size: 11px; background: var(--surface-alt); border: 1px solid var(--border);
+                    border-radius: 3px; padding: 1px 6px; color: var(--text-muted); }
 
 .detail-actions { margin-top: 18px; display: flex; flex-direction: column; gap: 8px; }
 .detail-link-btn {
