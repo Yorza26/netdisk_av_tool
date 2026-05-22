@@ -199,6 +199,7 @@ function applyFilters() {
 
   filteredItems = items;
   setText('result-count', items.length);
+  setText('result-size', bytesToHuman(items.reduce((s, i) => s + (i.total_size || 0), 0)));
   renderItemList(items, 'item-list');
 }
 
