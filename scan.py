@@ -36,7 +36,10 @@ from collections import defaultdict
 # ─────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────
-ROOT_DIR        = r"E:\115\云下载"
+ROOT_DIRS = [
+    r"E:\115\云下载",
+    # r"E:\115\!NSFW",
+]
 OUTPUT_FILE     = "data.js"
 META_CACHE_FILE     = "meta_cache.json"
 CLASSIFY_CACHE_FILE = "classify_cache.json"   # written by classify.py
@@ -270,8 +273,19 @@ def bytes_to_human(b: int) -> str:
     return f"{b:.1f} PB"
 
 
-def process_results(raw: list, root_dir: str) -> dict:
-    norm_root = os.path.normpath(root_dir)
+def process_results(raw: list, root_dirs: list) -> dict:
+    norm_roots = [os.path.normpath(r) for r in root_dirs]
+
+    def find_root(full_path: str):
+        """Return the norm_root that is a parent of full_path, or None."""
+        for nr in norm_roots:
+            try:
+                rel = os.path.relpath(full_path, nr)
+            except ValueError:
+                continue
+            if not rel.startswith('..'):
+                return nr, rel
+        return None, None
 
     def new_entry(name: str, full_path: str) -> dict:
         bango, series = extract_bango(name)
@@ -289,8 +303,9 @@ def process_results(raw: list, root_dir: str) -> dict:
 
     # d1[top]      — entry for each direct child of root (depth 1)
     # d2[top][sub] — entry for each grandchild of root (depth 2)
-    d1: dict[str, dict] = {}
-    d2: dict[str, dict[str, dict]] = defaultdict(dict)
+    # Key is (norm_root, top) to avoid collisions across different roots
+    d1: dict[tuple, dict] = {}
+    d2: dict[tuple, dict[str, dict]] = defaultdict(dict)
 
     for item in raw:
         name      = item.get('name', '')
@@ -302,17 +317,17 @@ def process_results(raw: list, root_dir: str) -> dict:
         is_folder = item.get('type') == 'folder'
         full_path = os.path.normpath(os.path.join(path, name))
 
-        try:
-            rel = os.path.relpath(full_path, norm_root)
-        except ValueError:
+        norm_root, rel = find_root(full_path)
+        if norm_root is None:
             continue
         parts = rel.split(os.sep)
         if not parts or parts[0] in ('', '.'):
             continue
 
         top = parts[0]
-        if top not in d1:
-            d1[top] = new_entry(top, os.path.join(norm_root, top))
+        key1 = (norm_root, top)
+        if key1 not in d1:
+            d1[key1] = new_entry(top, os.path.join(norm_root, top))
 
         if len(parts) == 1:
             continue  # the d1 folder itself
@@ -321,8 +336,8 @@ def process_results(raw: list, root_dir: str) -> dict:
 
         if is_folder:
             # Register depth-2 folder
-            if len(parts) == 2 and sub not in d2[top]:
-                d2[top][sub] = new_entry(sub, os.path.join(norm_root, top, sub))
+            if len(parts) == 2 and sub not in d2[key1]:
+                d2[key1][sub] = new_entry(sub, os.path.join(norm_root, top, sub))
             continue   # don't treat folders as files
 
         if size <= 0:
@@ -333,7 +348,7 @@ def process_results(raw: list, root_dir: str) -> dict:
 
         if len(parts) == 2:
             # File directly inside a depth-1 folder
-            e = d1[top]
+            e = d1[key1]
             e['total_size'] += size
             e['file_count'] += 1
             if is_video: e['video_count'] += 1
@@ -341,9 +356,9 @@ def process_results(raw: list, root_dir: str) -> dict:
                                'size_human': bytes_to_human(size), 'ext': ext})
         else:
             # File inside a depth-2 subfolder (or deeper) — credit to d2 entry
-            if sub not in d2[top]:
-                d2[top][sub] = new_entry(sub, os.path.join(norm_root, top, sub))
-            e = d2[top][sub]
+            if sub not in d2[key1]:
+                d2[key1][sub] = new_entry(sub, os.path.join(norm_root, top, sub))
+            e = d2[key1][sub]
             e['total_size'] += size
             e['file_count'] += 1
             if is_video: e['video_count'] += 1
@@ -413,7 +428,7 @@ def process_results(raw: list, root_dir: str) -> dict:
 
     return {
         'scan_time':  datetime.now().isoformat(),
-        'root_dir':   root_dir,
+        'root_dirs':  root_dirs,
         'statistics': {
             'total_items':       len(items),
             'jav_count':         jav_count,
@@ -626,7 +641,8 @@ def main(skip_meta: bool = False, all_meta: bool = False):
     print("=" * 55)
     print("  JAV Collection Scanner  (stdlib only)")
     print("=" * 55)
-    print(f"  Root   : {ROOT_DIR}")
+    for d in ROOT_DIRS:
+        print(f"  Root   : {d}")
     print(f"  Port   : {EVERYTHING_PORT}")
     print(f"  Output : {OUTPUT_FILE}")
     if skip_meta:
@@ -636,16 +652,16 @@ def main(skip_meta: bool = False, all_meta: bool = False):
     print("=" * 55)
     print()
 
-    search = f'path:"{ROOT_DIR}"'
+    search = ' | '.join(f'path:"{d}"' for d in ROOT_DIRS)
     print(f"Query: {search}")
     raw = fetch_everything(search)
 
     if not raw:
-        print("No results. Check the path and that Everything has indexed it.")
+        print("No results. Check the paths and that Everything has indexed them.")
         sys.exit(1)
 
     print(f"Processing {len(raw)} items ...")
-    data = process_results(raw, ROOT_DIR)
+    data = process_results(raw, ROOT_DIRS)
 
     # ── Write data.js immediately so the browser is usable right away ──
     _write_data_js(data)
@@ -671,16 +687,16 @@ def main(skip_meta: bool = False, all_meta: bool = False):
     meta_cache = load_meta_cache()
     fetched = enrich_with_meta(data['items'], meta_cache, all_meta=all_meta)
 
-    # ── Re-write data.js with metadata embedded ───────────────────────
+    # ── Always re-write data.js so cached metadata is never lost ─────
+    # enrich_with_meta applies the full cache to every item; even if no
+    # new items were fetched this run, previously-cached covers / titles /
+    # actresses must appear in the output file.
+    _write_data_js(data)
+    covered = sum(1 for e in data['items'] if e.get('cover'))
     if fetched:
-        _write_data_js(data)
-        print(f"  {OUTPUT_FILE} updated with {fetched} new covers — reload index.html.")
+        print(f"  {OUTPUT_FILE} updated — {fetched} new + {covered} total covers.")
     else:
-        # Still apply existing cache entries (no new fetches needed)
-        covered = sum(1 for e in data['items'] if e.get('cover'))
-        if covered:
-            _write_data_js(data)
-            print(f"  {OUTPUT_FILE} updated with {covered} cached covers — reload index.html.")
+        print(f"  {OUTPUT_FILE} updated — {covered} cached covers applied.")
     print()
 
 
