@@ -361,9 +361,10 @@ function renderDetailShell(item) {
 
     <div class="detail-section-title">Files on disk</div>
     <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">
-      📁 ${esc(item.name)} &nbsp;·&nbsp; ${item.total_size_human} &nbsp;·&nbsp; ${item.file_count} file(s)
+      <a class="path-link" href="${localUrl(item.path)}" target="_blank" title="Open folder">📁 ${esc(item.name)}</a>
+      &nbsp;·&nbsp; ${item.total_size_human} &nbsp;·&nbsp; ${item.file_count} file(s)
     </div>
-    <div id="detail-files">${renderFileList(item.files)}</div>
+    <div id="detail-files">${renderFileList(item.path, item.files)}</div>
     ${item.file_count > item.files.length
       ? `<div style="font-size:12px;color:var(--text-muted);margin-top:6px;">
            … and ${item.file_count - item.files.length} more in subfolders
@@ -382,15 +383,21 @@ function renderDetailShell(item) {
   `;
 }
 
-function renderFileList(files) {
+function renderFileList(folderPath, files) {
   if (!files?.length) return '<div class="muted">No files listed</div>';
-  return files.map(f =>
-    `<div class="file-entry">
+  return files.map(f => {
+    const url = localUrl(folderPath + '\\' + f.name);
+    return `<div class="file-entry">
        <span>${fileIcon(f.ext)}</span>
-       <span class="file-name" title="${esc(f.name)}">${esc(f.name)}</span>
+       <a class="file-name path-link" href="${url}" target="_blank" title="${esc(f.name)}">${esc(f.name)}</a>
        <span class="file-size">${f.size_human || ''}</span>
-     </div>`
-  ).join('');
+     </div>`;
+  }).join('');
+}
+
+// Convert a Windows path to a file:// URL
+function localUrl(winPath) {
+  return 'file:///' + winPath.replace(/\\/g, '/');
 }
 
 function fileIcon(ext) {
