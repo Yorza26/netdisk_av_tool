@@ -1,0 +1,11 @@
+﻿python :   File "<string>", line 15
+At line:1 char:28
++ cd D:\Playground\jav_tool; python -c "
++                            ~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (  File "<string>" 
+   , line 15:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+    print(f'  {i[" name\][:50]}')
+                 ^
+SyntaxError: unterminated string literal (detected at line 15)

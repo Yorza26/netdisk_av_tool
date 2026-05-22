@@ -23,6 +23,28 @@ let countChart     = null;
 let sizeChart      = null;
 let seriesSortKey  = 'count';
 let seriesSortAsc  = false;
+let actressSortKey = 'count';
+let actressSortAsc = false;
+
+// ── Classifier state ──────────────────────────
+let classifyMap    = {};     // path → category (from classify_data.js)
+let clOverrides    = {};     // path → category (session-only manual overrides)
+let currentClCat   = 'all';
+let hasClassifyData = false;
+let clModel        = '—';
+let clTime         = '';
+
+const CL_CATS  = ['all','jav','uncensored','hentai','amateur','western',
+                   'anime','gravure','game','other','unclassified'];
+const CL_ICONS = { jav:'🎌', uncensored:'🔓', hentai:'🌸', amateur:'📱',
+                   western:'🌎', anime:'✨', gravure:'📸', game:'🎮',
+                   other:'📦', unclassified:'❓' };
+const CL_COLORS = { jav:'#f06292', uncensored:'#ff7043', hentai:'#ba68c8',
+                    amateur:'#26a69a', western:'#42a5f5', anime:'#e040fb',
+                    gravure:'#ec407a', game:'#26c6da', other:'#90a4ae',
+                    unclassified:'#546e7a' };
+// Categories available for manual override cycling (not 'all' or 'unclassified')
+const CL_CYCLE = ['jav','uncensored','hentai','amateur','western','anime','gravure','game','other'];
 
 
 // ─────────────────────────────────────────────
@@ -59,6 +81,43 @@ function onDataReady() {
   if (nonjav > 0) { badge.textContent = nonjav; badge.style.display = ''; }
   else { badge.style.display = 'none'; }
 
+  // Actress badge — show unique actress count
+  const actressSet = new Set();
+  allItems.forEach(i => (i.actresses || []).forEach(a => actressSet.add(a)));
+  const actressBadge = el('actress-badge');
+  if (actressBadge && actressSet.size > 0) {
+    actressBadge.textContent = actressSet.size;
+    actressBadge.style.display = '';
+  }
+
+  // Classifier badge — count unclassified items (only if classify data is loaded)
+  const classifyData = window.__classifyData__;
+  if (classifyData?.classifications) {
+    hasClassifyData = true;
+    classifyMap     = classifyData.classifications;
+    clModel         = classifyData.model || '—';
+    clTime          = classifyData.classified_time || '';
+    const unclassified = allItems.filter(i => !classifyMap[i.path]).length;
+    const clBadge = el('cl-badge');
+    if (clBadge) {
+      if (unclassified > 0) { clBadge.textContent = unclassified + ' ?'; clBadge.style.display = ''; }
+      else { clBadge.style.display = 'none'; }
+    }
+  } else {
+    // No classify data — show '!' badge to indicate action needed
+    const clBadge = el('cl-badge');
+    if (clBadge) { clBadge.textContent = '!'; clBadge.style.display = ''; }
+  }
+
+  // Delegated click for actress-link tags (handles both cards and detail panel)
+  document.addEventListener('click', e => {
+    const tag = e.target.closest('.actress-link');
+    if (!tag) return;
+    e.stopPropagation();
+    const name = tag.dataset.actress;
+    if (name) filterByActress(name);
+  }, true);   // capture phase so it fires before card's own listener
+
   el('loading').classList.add('hidden');
   showView(currentView || 'dashboard');
 }
@@ -87,6 +146,8 @@ function showView(name) {
   if      (name === 'dashboard')  renderDashboard();
   else if (name === 'browse')     renderBrowse();
   else if (name === 'statistics') renderStatistics();
+  else if (name === 'actress')    renderActress();
+  else if (name === 'classifier') renderClassifier();
   else if (name === 'nonjav')     renderNonJav();
 }
 
@@ -261,9 +322,14 @@ function createItemCard(item, idx = -1) {
 
   // Info — show javbus title if available, folder name as fallback/tooltip
   const actressHtml = item.actresses?.length
-    ? `<div class="item-actresses">${
-        item.actresses.slice(0, 3).map(a => `<span class="actress-tag">${esc(a)}</span>`).join('')
-      }${item.actresses.length > 3 ? `<span class="actress-tag">+${item.actresses.length - 3}</span>` : ''}</div>`
+    ? `<div class="item-actresses">` +
+      item.actresses.slice(0, 3).map(a =>
+        `<span class="actress-tag actress-link" data-actress="${esc(a)}" title="Browse ${esc(a)}">${esc(a)}</span>`
+      ).join('') +
+      (item.actresses.length > 3
+        ? `<span class="actress-tag" title="${item.actresses.slice(3).map(a => esc(a)).join(', ')}">+${item.actresses.length - 3}</span>`
+        : '') +
+      `</div>`
     : '';
 
   const info = document.createElement('div');
@@ -360,6 +426,78 @@ function sortSeriesTable(key) {
 
 
 // ─────────────────────────────────────────────
+// Actresses
+// ─────────────────────────────────────────────
+
+function buildActressStats() {
+  const map = {};
+  allItems.forEach(item => {
+    (item.actresses || []).forEach(a => {
+      if (!map[a]) map[a] = { count: 0, size: 0 };
+      map[a].count++;
+      map[a].size += item.total_size || 0;
+    });
+  });
+  return Object.entries(map).map(([name, d]) => ({
+    name,
+    count:      d.count,
+    size:       d.size,
+    size_human: bytesToHuman(d.size),
+  }));
+}
+
+function renderActress() {
+  let rows = buildActressStats();
+
+  rows.sort((a, b) => {
+    let cmp = 0;
+    if      (actressSortKey === 'name')  cmp = a.name.localeCompare(b.name, 'ja');
+    else if (actressSortKey === 'count') cmp = a.count - b.count;
+    else if (actressSortKey === 'size')  cmp = a.size  - b.size;
+    return actressSortAsc ? cmp : -cmp;
+  });
+
+  const query = (el('actress-search')?.value || '').toLowerCase().trim();
+  if (query) rows = rows.filter(r => r.name.toLowerCase().includes(query));
+
+  setText('actress-result-count', `${rows.length} actresses`);
+
+  const tbody = el('actress-body');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+
+  rows.forEach((row, idx) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="rank-cell">${idx + 1}</td>
+      <td class="series-cell">
+        <span class="actress-tag actress-link" data-actress="${esc(row.name)}"
+              title="Browse items by ${esc(row.name)}">${esc(row.name)}</span>
+      </td>
+      <td class="count-cell">${row.count}</td>
+      <td class="size-cell">${row.size_human}</td>
+    `;
+    tr.style.cursor = 'pointer';
+    tr.title = `Browse items by ${row.name}`;
+    tr.addEventListener('click', () => filterByActress(row.name));
+    tbody.appendChild(tr);
+  });
+}
+
+function sortActressTable(key) {
+  if (actressSortKey === key) actressSortAsc = !actressSortAsc;
+  else { actressSortKey = key; actressSortAsc = false; }
+  renderActress();
+}
+
+function filterByActress(name) {
+  el('search-box').value  = name;
+  el('jav-only').checked  = false;
+  showView('browse');
+}
+
+
+// ─────────────────────────────────────────────
 // Non-JAV
 // ─────────────────────────────────────────────
 
@@ -411,7 +549,9 @@ function renderDetailShell(item) {
   let metaHtml = '';
   if (item.is_jav && (item.cover || item.title || item.actresses?.length)) {
     const actressHtml = item.actresses?.length
-      ? `<div class="jav-actresses">👤 ${item.actresses.map(a => `<span class="actress-tag">${esc(a)}</span>`).join('')}</div>`
+      ? `<div class="jav-actresses">👤 ${item.actresses.map(a =>
+          `<span class="actress-tag actress-link" data-actress="${esc(a)}" title="Browse ${esc(a)}">${esc(a)}</span>`
+        ).join('')}</div>`
       : '';
     metaHtml = `
       <div class="jav-info-card">
@@ -687,4 +827,169 @@ function seriesColor(name, alpha = 1) {
     hash = name.charCodeAt(i) + ((hash << 5) - hash);
   const h = Math.abs(hash) % 360;
   return `hsla(${h},70%,60%,${alpha})`;
+}
+
+
+// ─────────────────────────────────────────────
+// Classifier
+// ─────────────────────────────────────────────
+
+function clGetCategory(item) {
+  return clOverrides[item.path] ?? classifyMap[item.path] ?? null;
+}
+
+function clCountsByCat() {
+  const counts = Object.fromEntries(CL_CATS.map(c => [c, 0]));
+  counts.all = allItems.length;
+  allItems.forEach(item => {
+    const cat = clGetCategory(item);
+    if (cat && counts[cat] !== undefined) counts[cat]++;
+    else counts.unclassified++;
+  });
+  return counts;
+}
+
+function clSizeByCat() {
+  const sizes = Object.fromEntries(CL_CATS.map(c => [c, 0]));
+  sizes.all = allItems.reduce((s, i) => s + (i.total_size || 0), 0);
+  allItems.forEach(item => {
+    const cat = clGetCategory(item);
+    const sz  = item.total_size || 0;
+    if (cat && sizes[cat] !== undefined) sizes[cat] += sz;
+    else sizes.unclassified += sz;
+  });
+  return sizes;
+}
+
+function buildClCatBar() {
+  const counts = clCountsByCat();
+  const bar = el('cl-cat-bar');
+  if (!bar) return;
+  bar.innerHTML = '';
+  CL_CATS.forEach(cat => {
+    if (counts[cat] === 0 && cat !== 'all') return;
+    const pill = document.createElement('button');
+    pill.className   = 'cat-pill' + (cat === currentClCat ? ' active' : '');
+    pill.dataset.cat = cat;
+    const label = cat === 'all' ? 'All' : cat.charAt(0).toUpperCase() + cat.slice(1);
+    pill.innerHTML = `${CL_ICONS[cat] ?? '🗂️'} ${label}<span class="pill-count">${counts[cat]}</span>`;
+    pill.onclick = () => { currentClCat = cat; refreshClCatBar(); renderClList(); };
+    bar.appendChild(pill);
+  });
+}
+
+function refreshClCatBar() {
+  const counts = clCountsByCat();
+  document.querySelectorAll('#cl-cat-bar .cat-pill').forEach(pill => {
+    const cat = pill.dataset.cat;
+    pill.classList.toggle('active', cat === currentClCat);
+    const span = pill.querySelector('.pill-count');
+    if (span) span.textContent = counts[cat] ?? 0;
+  });
+}
+
+function buildClStatsBar() {
+  const counts = clCountsByCat();
+  const sizes  = clSizeByCat();
+  const bar = el('cl-stats-bar');
+  if (!bar) return;
+  bar.innerHTML = '';
+  CL_CATS.filter(c => c !== 'all' && c !== 'unclassified' && counts[c] > 0).forEach(cat => {
+    const chip = document.createElement('div');
+    chip.className = 'cl-stat-chip';
+    const color = CL_COLORS[cat] || '#90a4ae';
+    chip.innerHTML = `
+      <div class="chip-val" style="color:${color}">${counts[cat]}</div>
+      <div class="chip-lbl">${CL_ICONS[cat] ?? ''} ${cat}</div>
+      <div class="chip-size">${bytesToHuman(sizes[cat])}</div>`;
+    bar.appendChild(chip);
+  });
+}
+
+function renderClassifier() {
+  // Header labels
+  const timeEl = el('cl-time');
+  const modEl  = el('cl-model-label');
+  if (timeEl) timeEl.textContent = clTime ? 'Updated ' + clTime.slice(0, 16) : '';
+  if (modEl)  modEl.textContent  = hasClassifyData ? `model: ${clModel}` : '';
+
+  // Not-ready banner
+  const banner = el('cl-not-ready');
+  if (banner) banner.classList.toggle('hidden', hasClassifyData);
+
+  if (!hasClassifyData) {
+    el('cl-stats-bar').innerHTML = '';
+    el('cl-cat-bar').innerHTML   = '';
+    el('cl-list').innerHTML      = '';
+    return;
+  }
+
+  buildClStatsBar();
+  buildClCatBar();
+  renderClList();
+}
+
+function renderClList() {
+  if (!hasClassifyData) return;
+  const query = (el('cl-search')?.value || '').toLowerCase().trim();
+
+  const items = allItems.filter(item => {
+    const cat = clGetCategory(item);
+    const matchCat =
+      currentClCat === 'all'          ? true :
+      currentClCat === 'unclassified' ? !cat :
+      cat === currentClCat;
+    if (!matchCat) return false;
+    if (query) {
+      const hay = (item.name + ' ' + (item.bango || '') + ' ' + (item.title || '')).toLowerCase();
+      return hay.includes(query);
+    }
+    return true;
+  });
+
+  // Share filteredItems so range-select and markMultiSelected work in this view
+  filteredItems  = items;
+  lastMultiIndex = -1;
+
+  const totalSize = items.reduce((s, i) => s + (i.total_size || 0), 0);
+  const rb = el('cl-result-bar');
+  if (rb) rb.textContent = `${items.length} item${items.length !== 1 ? 's' : ''} · ${bytesToHuman(totalSize)}`;
+
+  const list = el('cl-list');
+  if (!list) return;
+  const frag = document.createDocumentFragment();
+
+  items.forEach((item, idx) => {
+    // Reuse createItemCard for checkbox / mark-btn / detail-click / range-select
+    const card = createItemCard(item, idx);
+
+    // Insert classifier category badge right after the checkbox col (before series badge)
+    const cat = clGetCategory(item) ?? 'unclassified';
+    const catBadge = document.createElement('div');
+    catBadge.className   = `cl-cat-badge ${cat}`;
+    catBadge.textContent = (CL_ICONS[cat] ?? '') + ' ' + cat;
+    card.insertBefore(catBadge, card.children[1]);   // index 0 = checkbox, 1 = series badge
+
+    // Append override button (cycles category, session-only)
+    const btn = document.createElement('button');
+    btn.className   = 'cl-override-btn';
+    btn.title       = 'Cycle category (session only)';
+    btn.textContent = '✎';
+    btn.onclick = e => {
+      e.stopPropagation();   // don't open detail panel
+      const cur  = clGetCategory(item) ?? 'other';
+      const next = CL_CYCLE[(CL_CYCLE.indexOf(cur) + 1) % CL_CYCLE.length];
+      clOverrides[item.path] = next;
+      catBadge.className   = `cl-cat-badge ${next}`;
+      catBadge.textContent = (CL_ICONS[next] ?? '') + ' ' + next;
+      refreshClCatBar();
+      buildClStatsBar();
+    };
+    card.appendChild(btn);
+
+    frag.appendChild(card);
+  });
+
+  list.innerHTML = '';
+  list.appendChild(frag);
 }

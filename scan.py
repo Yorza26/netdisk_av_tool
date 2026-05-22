@@ -38,7 +38,8 @@ from collections import defaultdict
 # ─────────────────────────────────────────────
 ROOT_DIR        = r"E:\115\云下载"
 OUTPUT_FILE     = "data.js"
-META_CACHE_FILE = "meta_cache.json"
+META_CACHE_FILE     = "meta_cache.json"
+CLASSIFY_CACHE_FILE = "classify_cache.json"   # written by classify.py
 META_PER_RUN    = 100    # max new items to fetch per scan run
 META_DELAY      = 1.0    # seconds between metadata requests (be polite)
 EVERYTHING_PORT = 80     # Change if you changed it in Everything's options
@@ -79,6 +80,24 @@ def _strip_site_prefix(text: str) -> str:
 
 
 # ─────────────────────────────────────────────
+# Distributor-tag prefix stripping
+# ─────────────────────────────────────────────
+# Strips distributor watermarks like: 第一會所新片@SIS001@, olo@SIS001@
+# Pattern: anything before @WORD@ at the start of the name.
+# "SIS001" (and "SEXINSEX") are group tags, NOT JAV bangos.
+_DISTRIB_TAG_RE = re.compile(
+    r'^[^@]*'          # anything before the first @  (CJK, ASCII, spaces, etc.)
+    r'@[A-Za-z0-9]{3,}@',   # @TAG@ — at least 3 alphanumeric chars
+    re.I
+)
+
+def _strip_distrib_prefix(text: str) -> str:
+    """Strip 第一會所新片@SIS001@ style distributor prefixes."""
+    stripped = _DISTRIB_TAG_RE.sub('', text)
+    return stripped.strip('@_ \t').strip()
+
+
+# ─────────────────────────────────────────────
 # Bango extraction
 # ─────────────────────────────────────────────
 
@@ -103,6 +122,23 @@ _BANGO_PATTERNS = [
     (re.compile(r'\b(1PONDO|CARIBBEANCOM|CARIBPR)[-_](\d{6})[-_](\d{3})\b', re.I),
      lambda m: (f"{m.group(1).upper()}-{m.group(2)}-{m.group(3)}", m.group(1).upper())),
 
+    # Parenthesized studio format used by 第一會所 distributors:
+    #   (HEYZO)(0435)  →  HEYZO-0435
+    (re.compile(r'\(HEYZO\)\((\d{4,5})\)', re.I),
+     lambda m: (f"HEYZO-{m.group(1)}", "HEYZO")),
+
+    #   (Caribbean)(YYMMDD_NNN) or (Caribbean)(YYMMDD-NNN)  →  CARIBBEANCOM-…
+    (re.compile(r'\(CARIB(?:BEAN(?:COM)?)?\)\((\d{6})[_-](\d{3})\)', re.I),
+     lambda m: (f"CARIBBEANCOM-{m.group(1)}-{m.group(2)}", "CARIBBEANCOM")),
+
+    #   (1pondo)(YYMMDD_NNN)  →  1PONDO-…
+    (re.compile(r'\(1\s*(?:PONDO|PON|P)\)\((\d{6})[_-](\d{3,4})\)', re.I),
+     lambda m: (f"1PONDO-{m.group(1)}-{m.group(2)}", "1PONDO")),
+
+    #   (1000人斬り)(YYMMDD_name) or (1000giri)(YYMMDD)  →  1000GIRI-…
+    (re.compile(r'\(1000[^\)]{0,6}\)\((\d{6}[a-z_]*)\)', re.I),
+     lambda m: (f"1000GIRI-{m.group(1).rstrip('_')}", "1000GIRI")),
+
     # Numeric-prefix series: 300MAAN-456, 200GANA-123, 230ORECO-171
     (re.compile(r'(?<![A-Z\d])(\d{1,3}[A-Z]{2,8})[-.](\d{2,5})(?!\d)', re.I),
      lambda m: (f"{m.group(1).upper()}-{m.group(2)}", m.group(1).upper())),
@@ -123,11 +159,37 @@ _BANGO_PATTERNS = [
 
 
 def extract_bango(text: str):
-    """Try to find a bango in text. Retries after stripping leading site prefixes."""
+    """Try to find a bango in text.
+
+    Attempt order (mutually exclusive paths):
+
+    A. Distributor-tag detected (e.g. 第一會所@SIS001@):
+       → ONLY try the stripped form. Never fall back to the original so that the
+         group tag (SIS001) cannot be mistaken for a bango.
+
+    B. No distributor tag:
+       1. Original text.
+       2. Site-prefix stripped (e.g. [Thz.la] removed).
+    """
+    # ── Path A: distributor-tagged name ──────────────────────────────────────
+    stripped_distrib = _strip_distrib_prefix(text)
+    if stripped_distrib and stripped_distrib != text:
+        # Has a distributor prefix → ONLY search the stripped remainder.
+        # Do NOT fall back to the original; the tag itself (@SIS001@) must
+        # never be treated as a bango.
+        for pat, fmt in _BANGO_PATTERNS:
+            m = pat.search(stripped_distrib)
+            if m:
+                bango, series = fmt(m)
+                if series not in FALSE_POSITIVE_SERIES:
+                    return bango, series
+        return None, None
+
+    # ── Path B: no distributor prefix ────────────────────────────────────────
     attempts = [text]
-    cleaned = _strip_site_prefix(text)
-    if cleaned != text and cleaned:
-        attempts.append(cleaned)
+    stripped_site = _strip_site_prefix(text)
+    if stripped_site and stripped_site != text:
+        attempts.append(stripped_site)
 
     for attempt in attempts:
         for pat, fmt in _BANGO_PATTERNS:
@@ -453,6 +515,19 @@ def load_meta_cache() -> dict:
         return {}
 
 
+def _load_uncensored_paths() -> set:
+    """Return the set of folder paths classified as 'uncensored' by classify.py.
+    Returns an empty set if classify_cache.json doesn't exist yet."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(here, CLASSIFY_CACHE_FILE)
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            cache = json.load(f)
+        return {p for p, cat in cache.items() if cat == 'uncensored'}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return set()
+
+
 def save_meta_cache(cache: dict) -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(here, META_CACHE_FILE)
@@ -462,10 +537,16 @@ def save_meta_cache(cache: dict) -> None:
 
 def enrich_with_meta(items: list, cache: dict, all_meta: bool = False) -> int:
     """Fetch missing metadata from jav321.com (up to META_PER_RUN items, or all if all_meta=True).
+    Skips items classified as 'uncensored' — jav321.com only covers censored JAV.
     Saves cache after every successful fetch. Handles Ctrl+C gracefully.
     Returns number of newly fetched items."""
+    uncensored = _load_uncensored_paths()
+    if uncensored:
+        print(f"  Skipping {len(uncensored)} uncensored items (jav321 only covers censored JAV).")
+
     need_fetch = [e for e in items if e.get('is_jav') and e.get('bango')
-                  and e['bango'] not in cache]
+                  and e['bango'] not in cache
+                  and e.get('path') not in uncensored]
     ok = fail = 0
     total_needed = len(need_fetch)
     limit        = total_needed if all_meta else min(total_needed, META_PER_RUN)

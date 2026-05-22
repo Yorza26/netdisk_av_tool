@@ -548,6 +548,9 @@ tbody td { padding: 9px 14px; }
 .jav-actresses    { display: flex; flex-wrap: wrap; gap: 4px; }
 .actress-tag      { font-size: 11px; background: var(--surface-alt); border: 1px solid var(--border);
                     border-radius: 3px; padding: 1px 6px; color: var(--text-muted); }
+.actress-link     { cursor: pointer; transition: background .12s, color .12s, border-color .12s; }
+.actress-link:hover { background: rgba(79,195,247,.15); border-color: var(--accent-blue);
+                      color: var(--accent-blue); }
 
 .detail-actions { margin-top: 18px; display: flex; flex-direction: column; gap: 8px; }
 .detail-link-btn {
@@ -658,6 +661,107 @@ tbody td { padding: 9px 14px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+/* ── Classifier view ──────────────────────────── */
+
+.cl-header {
+  display: flex; align-items: baseline; gap: 16px;
+  margin-bottom: 20px; flex-wrap: wrap;
+}
+.cl-sub   { color: var(--text-muted); font-size: 13px; }
+.cl-model {
+  margin-left: auto; font-size: 12px; color: var(--text-dim);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 2px 10px;
+}
+
+/* Not-ready banner */
+.not-ready {
+  background: rgba(255,167,38,.08);
+  border: 1px solid var(--accent-orange);
+  border-radius: 10px; padding: 18px 22px;
+  margin-bottom: 24px; line-height: 1.7;
+  color: var(--text);
+}
+.not-ready code { font-size: 13px; }
+
+/* Category filter pills */
+.cat-bar {
+  display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px;
+}
+.cat-pill {
+  padding: 5px 14px; border-radius: 20px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text-muted);
+  cursor: pointer; font-size: 13px; font-weight: 600;
+  transition: all .15s; user-select: none;
+}
+.cat-pill:hover  { border-color: var(--accent); color: var(--text); }
+.cat-pill.active { color: #fff; border-color: transparent; }
+.cat-pill.active[data-cat="all"]          { background: var(--accent); }
+.cat-pill.active[data-cat="jav"]          { background: #f06292; }
+.cat-pill.active[data-cat="uncensored"]   { background: #ff7043; }
+.cat-pill.active[data-cat="hentai"]       { background: #ab47bc; }
+.cat-pill.active[data-cat="amateur"]      { background: #26a69a; }
+.cat-pill.active[data-cat="western"]      { background: #42a5f5; }
+.cat-pill.active[data-cat="anime"]        { background: #e040fb; }
+.cat-pill.active[data-cat="gravure"]      { background: #ec407a; }
+.cat-pill.active[data-cat="game"]         { background: #26c6da; }
+.cat-pill.active[data-cat="other"]        { background: #78909c; }
+.cat-pill.active[data-cat="unclassified"] { background: #546e7a; }
+.cat-pill .pill-count {
+  background: rgba(255,255,255,.18); border-radius: 10px;
+  padding: 1px 7px; margin-left: 6px; font-size: 11px;
+}
+
+/* Classifier stats bar */
+.cl-stats-bar {
+  display: flex; gap: 16px; flex-wrap: wrap;
+  margin-bottom: 20px; padding: 12px 16px;
+  background: var(--surface); border-radius: 10px;
+  border: 1px solid var(--border);
+}
+.cl-stat-chip { text-align: center; }
+.cl-stat-chip .chip-val  { font-size: 20px; font-weight: 700; }
+.cl-stat-chip .chip-lbl  { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.cl-stat-chip .chip-size { font-size: 12px; color: var(--text-muted); }
+
+/* Search row + result bar */
+.cl-search-row {
+  display: flex; gap: 10px; align-items: center; margin-bottom: 14px;
+}
+.cl-search-row input[type=search] {
+  flex: 1; padding: 7px 12px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--text); font-size: 13px;
+}
+.cl-search-row input[type=search]:focus { outline: none; border-color: var(--accent); }
+.cl-result-bar { font-size: 13px; color: var(--text-muted); white-space: nowrap; }
+
+/* Category badge — injected into standard item-card in the Classifier view */
+.cl-cat-badge {
+  width: 78px; min-width: 78px; text-align: center;
+  padding: 3px 0; border-radius: 12px; font-size: 11px; font-weight: 700;
+  flex-shrink: 0;
+}
+.cl-cat-badge.jav          { background: rgba(240,98,146,.18);  color: #f06292; }
+.cl-cat-badge.uncensored   { background: rgba(255,112,67,.18);   color: #ff7043; }
+.cl-cat-badge.hentai       { background: rgba(171,71,188,.18);   color: #ba68c8; }
+.cl-cat-badge.amateur      { background: rgba(38,166,154,.18);   color: #26a69a; }
+.cl-cat-badge.western      { background: rgba(66,165,245,.18);   color: #42a5f5; }
+.cl-cat-badge.anime        { background: rgba(224,64,251,.18);   color: #e040fb; }
+.cl-cat-badge.gravure      { background: rgba(236,64,122,.18);   color: #ec407a; }
+.cl-cat-badge.game         { background: rgba(38,198,218,.18);   color: #26c6da; }
+.cl-cat-badge.other        { background: rgba(120,144,156,.18);  color: #90a4ae; }
+.cl-cat-badge.unclassified { background: var(--surface-alt); color: var(--text-muted); }
+
+/* Manual override button */
+.cl-override-btn {
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text-muted); font-size: 11px; cursor: pointer;
+  padding: 3px 8px; flex-shrink: 0; white-space: nowrap;
+  transition: all .12s;
+}
+.cl-override-btn:hover { border-color: var(--accent); color: var(--text); }
 
 /* ── Responsive ───────────────────────────────── */
 @media (max-width: 900px) {

@@ -13,7 +13,14 @@
       "Bash(curl -s -o /dev/null -w \"app.js: %{http_code} %{size_download} bytes\\\\n\" http://localhost:5001/app.js)",
       "Bash(curl -s -o /dev/null -w \"chart.js: %{http_code} %{size_download} bytes\\\\n\" http://localhost:5001/chart.js)",
       "Bash(kill %1)",
-      "PowerShell(cd D:\\\\Playground\\\\jav_tool; if \\(Test-Path meta_cache.json\\) { $content = Get-Content meta_cache.json -Raw | ConvertFrom-Json; $props = $content.PSObject.Properties; $total = $props.Count; $empty = \\($props | Where-Object { -not $_.Value.cover -and -not $_.Value.title }\\).Count; \"Total entries: $total`nEmpty \\(no cover AND no title\\): $empty\" } else { \"meta_cache.json not found\" })"
+      "PowerShell(cd D:\\\\Playground\\\\jav_tool; if \\(Test-Path meta_cache.json\\) { $content = Get-Content meta_cache.json -Raw | ConvertFrom-Json; $props = $content.PSObject.Properties; $total = $props.Count; $empty = \\($props | Where-Object { -not $_.Value.cover -and -not $_.Value.title }\\).Count; \"Total entries: $total`nEmpty \\(no cover AND no title\\): $empty\" } else { \"meta_cache.json not found\" })",
+      "Bash(curl -s http://localhost:11434/api/tags)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(m['name']\\) for m in d.get\\('models',[]\\)]\")",
+      "Read(//mnt/d/Playground/**)",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 *)",
+      "Bash(Remove-Item \"D:\\\\Playground\\\\jav_tool\\\\classify.html\" -ErrorAction Stop)",
+      "PowerShell(Remove-Item *)"
     ]
   }
 }
