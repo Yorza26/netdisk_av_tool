@@ -340,8 +340,6 @@ function openDetail(item) {
   );
   el('detail-panel').classList.remove('hidden');
   renderDetailShell(item);
-  // Auto-open Javbus if item has a bango
-  if (item.bango) openJavbus(item.bango);
 }
 
 function closeDetail() {

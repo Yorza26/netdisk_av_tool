@@ -48,6 +48,8 @@ FALSE_POSITIVE_SERIES = {
     'FPS', 'BD', 'DVD', 'VR', 'USB', 'HDD', 'SSD', 'RAM', 'CPU',
     'GPU', 'HDR', 'SDR', 'UHD', 'FHD', 'HD', 'SD', 'TS', 'GB', 'MB',
     'KB', 'TB', 'EP', 'OVA', 'OAD', 'SP', 'CM', 'NC', 'OP', 'ED',
+    # Video codec / tech labels that look like letter+digit series codes
+    'H264', 'H265', 'X264', 'X265', 'AV1', 'VP9',
 }
 
 # ─────────────────────────────────────────────
@@ -77,29 +79,37 @@ _BANGO_PATTERNS = [
     (re.compile(r'\bFC2[-_]?PPV[-_]?(\d{4,7})\b', re.I),
      lambda m: (f"FC2-PPV-{m.group(1)}", "FC2-PPV")),
 
-    # HEYZO-XXXX  (also handles heyzo_hd_XXXX, heyzo-hd-XXXX, heyzo_hd_XXXX_full)
-    # Use (?!\d) instead of \b so underscore-suffixed names like _full still match
+    # HEYZO-XXXX  (also handles heyzo_hd_XXXX_full — use (?!\d) not \b)
     (re.compile(r'\bHEYZO[-_](?:HD[-_])?(\d{4})(?!\d)', re.I),
      lambda m: (f"HEYZO-{m.group(1)}", "HEYZO")),
+
+    # 1pondo trailing format: 072616_346-1pon  (date_num-1pon at the END)
+    (re.compile(r'(?<!\d)(\d{6})[-_](\d{3})[-_]1pon(?:do)?\b', re.I),
+     lambda m: (f"1PONDO-{m.group(1)}-{m.group(2)}", "1PONDO")),
 
     # Caribbean carib format: 102720-001-carib[-1080p]
     (re.compile(r'(?<!\d)(\d{6})[-_](\d{3})[-_]CARIB\b', re.I),
      lambda m: (f"CARIBBEANCOM-{m.group(1)}-{m.group(2)}", "CARIBBEANCOM")),
 
-    # 1PONDO / CARIBBEANCOM — MMDDYY-XXX
+    # 1PONDO / CARIBBEANCOM name-first format: 1PONDO-MMDDYY-NNN
     (re.compile(r'\b(1PONDO|CARIBBEANCOM|CARIBPR)[-_](\d{6})[-_](\d{3})\b', re.I),
      lambda m: (f"{m.group(1).upper()}-{m.group(2)}-{m.group(3)}", m.group(1).upper())),
 
     # Numeric-prefix series: 300MAAN-456, 200GANA-123, 230ORECO-171
-    (re.compile(r'(?<![A-Z\d])(\d{1,3}[A-Z]{2,8})[-.](\d{2,5})(?![A-Z\d])', re.I),
+    (re.compile(r'(?<![A-Z\d])(\d{1,3}[A-Z]{2,8})[-.](\d{2,5})(?!\d)', re.I),
      lambda m: (f"{m.group(1).upper()}-{m.group(2)}", m.group(1).upper())),
 
-    # Standard with separator: MIDE-332, STARS.001, ssni-661
-    (re.compile(r'(?<![A-Z\d])([A-Z]{2,8})[-.](\d{2,5})(?![A-Z\d])', re.I),
+    # Standard with separator: MIDE-332, STARS.001, ssni-661, aoz-274z
+    # (?!\d) instead of (?![A-Z\d]) so trailing version letters (z, a, b) are allowed
+    (re.compile(r'(?<![A-Z\d])([A-Z]{2,8})[-.](\d{2,5})(?!\d)', re.I),
+     lambda m: (f"{m.group(1).upper()}-{m.group(2)}", m.group(1).upper())),
+
+    # Letter+digits series code: T28-542, S2M-003, R18-123
+    (re.compile(r'(?<![A-Z\d])([A-Z]\d{2,4})[-](\d{2,5})(?!\d)', re.I),
      lambda m: (f"{m.group(1).upper()}-{m.group(2)}", m.group(1).upper())),
 
     # Standard without separator: MIDE332, EKDV460
-    (re.compile(r'(?<![A-Z\d])([A-Z]{3,8})(\d{2,5})(?![A-Z\d])', re.I),
+    (re.compile(r'(?<![A-Z\d])([A-Z]{3,8})(\d{2,5})(?!\d)', re.I),
      lambda m: (f"{m.group(1).upper()}-{m.group(2)}", m.group(1).upper())),
 ]
 
@@ -192,65 +202,87 @@ def bytes_to_human(b: int) -> str:
 
 def process_results(raw: list, root_dir: str) -> dict:
     norm_root = os.path.normpath(root_dir)
-    dirs: dict[str, dict] = {}
+
+    def new_entry(name: str, full_path: str) -> dict:
+        bango, series = extract_bango(name)
+        return {
+            'name':        name,
+            'path':        full_path,
+            'bango':       bango,
+            'series':      series,
+            'is_jav':      bango is not None,
+            'total_size':  0,
+            'file_count':  0,
+            'video_count': 0,
+            'files':       [],
+        }
+
+    # d1[top]      — entry for each direct child of root (depth 1)
+    # d2[top][sub] — entry for each grandchild of root (depth 2)
+    d1: dict[str, dict] = {}
+    d2: dict[str, dict[str, dict]] = defaultdict(dict)
 
     for item in raw:
         name      = item.get('name', '')
         path      = item.get('path', '')
-        # size comes back as a numeric string for files, empty string for folders
         try:
             size = int(item.get('size') or 0)
         except (ValueError, TypeError):
             size = 0
         is_folder = item.get('type') == 'folder'
-
         full_path = os.path.normpath(os.path.join(path, name))
 
         try:
             rel = os.path.relpath(full_path, norm_root)
         except ValueError:
             continue
-
         parts = rel.split(os.sep)
         if not parts or parts[0] in ('', '.'):
             continue
 
         top = parts[0]
-
-        if top not in dirs:
-            bango, series = extract_bango(top)
-            dirs[top] = {
-                'name':         top,
-                'path':         os.path.join(norm_root, top),
-                'bango':        bango,
-                'series':       series,
-                'is_jav':       bango is not None,
-                'total_size':   0,
-                'file_count':   0,
-                'video_count':  0,
-                'files':        [],
-            }
+        if top not in d1:
+            d1[top] = new_entry(top, os.path.join(norm_root, top))
 
         if len(parts) == 1:
-            continue  # the dir itself
+            continue  # the d1 folder itself
 
-        if not is_folder and size > 0:
-            entry = dirs[top]
-            entry['total_size']  += size
-            entry['file_count']  += 1
-            ext = os.path.splitext(name)[1].lower()
-            if ext in VIDEO_EXTS:
-                entry['video_count'] += 1
-            if len(parts) == 2:
-                entry['files'].append({
-                    'name':       name,
-                    'size':       size,
-                    'size_human': bytes_to_human(size),
-                    'ext':        ext,
-                })
+        sub = parts[1]
 
-    # Infer bango from filenames when folder name had none
-    for entry in dirs.values():
+        if is_folder:
+            # Register depth-2 folder
+            if len(parts) == 2 and sub not in d2[top]:
+                d2[top][sub] = new_entry(sub, os.path.join(norm_root, top, sub))
+            continue   # don't treat folders as files
+
+        if size <= 0:
+            continue
+
+        ext      = os.path.splitext(name)[1].lower()
+        is_video = ext in VIDEO_EXTS
+
+        if len(parts) == 2:
+            # File directly inside a depth-1 folder
+            e = d1[top]
+            e['total_size'] += size
+            e['file_count'] += 1
+            if is_video: e['video_count'] += 1
+            e['files'].append({'name': name, 'size': size,
+                               'size_human': bytes_to_human(size), 'ext': ext})
+        else:
+            # File inside a depth-2 subfolder (or deeper) — credit to d2 entry
+            if sub not in d2[top]:
+                d2[top][sub] = new_entry(sub, os.path.join(norm_root, top, sub))
+            e = d2[top][sub]
+            e['total_size'] += size
+            e['file_count'] += 1
+            if is_video: e['video_count'] += 1
+            if len(parts) == 3:   # direct files only for the detail list
+                e['files'].append({'name': name, 'size': size,
+                                   'size_human': bytes_to_human(size), 'ext': ext})
+
+    # ── Infer bango from direct files when folder name had none ──────────
+    def infer_bango(entry: dict) -> None:
         if not entry['is_jav']:
             for f in entry['files']:
                 bango, series = extract_bango(f['name'])
@@ -258,17 +290,38 @@ def process_results(raw: list, root_dir: str) -> dict:
                     entry.update(bango=bango, series=series, is_jav=True)
                     break
 
-    # Finalise each entry
-    for entry in dirs.values():
-        entry['files'].sort(key=lambda f: f['size'], reverse=True)
-        entry['total_size_human'] = bytes_to_human(entry['total_size'])
+    for e in d1.values():
+        infer_bango(e)
+    for subs in d2.values():
+        for e in subs.values():
+            infer_bango(e)
+
+    # ── Decide which folders become items ────────────────────────────────
+    # • d1 has bango                       → JAV item
+    # • d1 has no bango, ≥1 JAV child     → collection: surface d2 children
+    # • d1 has no bango, no JAV children  → non-JAV item
+    items = []
+    for top, d1e in d1.items():
+        subs = d2.get(top, {})
+        if d1e['is_jav'] or not subs:
+            items.append(d1e)
+        elif any(s['is_jav'] for s in subs.values()):
+            # Collection folder — each child becomes its own item
+            items.extend(subs.values())
+        else:
+            # Non-JAV folder whose children are also non-JAV → keep as one item
+            items.append(d1e)
+
+    # Finalise
+    for e in items:
+        e['files'].sort(key=lambda f: f['size'], reverse=True)
+        e['total_size_human'] = bytes_to_human(e['total_size'])
 
     # Statistics
     series_count: dict[str, int] = defaultdict(int)
     series_size:  dict[str, int] = defaultdict(int)
     jav_count = non_jav_count = total_size = 0
 
-    items = list(dirs.values())
     for e in items:
         total_size += e['total_size']
         if e['is_jav']:
