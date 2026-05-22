@@ -152,11 +152,20 @@
     <!-- ── NON-JAV ── -->
     <div id="view-nonjav" class="view hidden">
       <h2 class="view-title">Non-JAV Directories</h2>
-      <p class="muted">Directories where no bango could be detected.</p>
+      <p class="muted">Directories where no bango could be detected. Total: <span id="nonjav-size">—</span></p>
       <div id="nonjav-list" class="item-list"></div>
     </div>
 
   </main>
+
+  <!-- ── Multi-select floating bar ── -->
+  <div id="multi-select-bar" class="hidden">
+    <span class="ms-icon">☑️</span>
+    <span id="multi-select-info" class="ms-info"></span>
+    <span class="ms-hint">Shift+click checkbox to range-select</span>
+    <button class="ms-btn ms-btn-mark" onclick="markMultiSelected()">🗑️ Mark all for deletion</button>
+    <button class="ms-btn ms-btn-clear" onclick="clearMultiSelect()">✕ Clear</button>
+  </div>
 
   <!-- ═══════════════════════════ DETAIL PANEL ═══════════════════════════ -->
   <aside id="detail-panel" class="hidden">

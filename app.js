@@ -11,16 +11,18 @@
 // State
 // ─────────────────────────────────────────────
 
-let appData       = null;
-let allItems      = [];
-let filteredItems = [];
-let markedItems   = new Set();
-let currentView   = 'dashboard';
-let selectedItem  = null;
-let countChart    = null;
-let sizeChart     = null;
-let seriesSortKey = 'count';
-let seriesSortAsc = false;
+let appData        = null;
+let allItems       = [];
+let filteredItems  = [];
+let markedItems    = new Set();
+let multiSelected  = new Set();   // paths currently multi-selected
+let lastMultiIndex = -1;          // index in filteredItems of last Ctrl/Shift click
+let currentView    = 'dashboard';
+let selectedItem   = null;
+let countChart     = null;
+let sizeChart      = null;
+let seriesSortKey  = 'count';
+let seriesSortAsc  = false;
 
 
 // ─────────────────────────────────────────────
@@ -73,6 +75,7 @@ function hideAllViews() {
 function showView(name) {
   hideAllViews();
   currentView = name;
+  lastMultiIndex = -1;   // indices are view-specific; reset on tab switch
 
   const viewEl = el(`view-${name}`);
   if (viewEl) viewEl.classList.remove('hidden');
@@ -203,20 +206,36 @@ function renderItemList(items, containerId) {
   const container = el(containerId);
   if (!container) return;
   const frag = document.createDocumentFragment();
-  items.forEach(item => frag.appendChild(createItemCard(item)));
+  items.forEach((item, idx) => frag.appendChild(createItemCard(item, idx)));
   container.innerHTML = '';
   container.appendChild(frag);
 }
 
-function createItemCard(item) {
-  const isMarked   = markedItems.has(item.path);
-  const isSelected = selectedItem && selectedItem.path === item.path;
+function createItemCard(item, idx = -1) {
+  const isMarked      = markedItems.has(item.path);
+  const isSelected    = selectedItem && selectedItem.path === item.path;
+  const isMultiSelect = multiSelected.has(item.path);
 
   const card = document.createElement('div');
   card.className = 'item-card' +
-    (isSelected ? ' is-selected' : '') +
-    (isMarked   ? ' is-marked'   : '');
+    (isSelected    ? ' is-selected'      : '') +
+    (isMarked      ? ' is-marked'        : '') +
+    (isMultiSelect ? ' is-multi-selected': '');
   card.dataset.path = item.path;
+
+  // Checkbox for multi-select
+  const checkCol = document.createElement('div');
+  checkCol.className = 'item-check-col';
+  const checkbox = document.createElement('input');
+  checkbox.type    = 'checkbox';
+  checkbox.className = 'item-check';
+  checkbox.checked = isMultiSelect;
+  checkbox.addEventListener('click', e => {
+    e.stopPropagation();
+    handleMultiClick(item, idx, e.shiftKey);
+  });
+  checkCol.appendChild(checkbox);
+  card.appendChild(checkCol);
 
   // Series badge
   const badge = document.createElement('div');
@@ -344,7 +363,22 @@ function sortSeriesTable(key) {
 // ─────────────────────────────────────────────
 
 function renderNonJav() {
-  renderItemList(allItems.filter(i => !i.is_jav), 'nonjav-list');
+  const items = allItems.filter(i => !i.is_jav);
+  filteredItems = items;
+  const totalBytes = items.reduce((sum, i) => sum + (i.total_size || 0), 0);
+  const humanSize = appData?.statistics?.total_size_human
+    ? (() => {
+        // reuse the same formatting logic
+        let b = totalBytes;
+        for (const u of ['B','KB','MB','GB','TB']) {
+          if (b < 1024) return b.toFixed(1) + ' ' + u;
+          b /= 1024;
+        }
+        return b.toFixed(1) + ' PB';
+      })()
+    : '?';
+  setText('nonjav-size', `${items.length} items · ${humanSize}`);
+  renderItemList(items, 'nonjav-list');
 }
 
 
@@ -536,10 +570,75 @@ function clearMarked() {
   updateDetailMarkBtn();
 }
 
+// ─────────────────────────────────────────────
+// Multi-select
+// ─────────────────────────────────────────────
+
+function handleMultiClick(item, idx, isShift) {
+  if (isShift && lastMultiIndex >= 0 && idx >= 0) {
+    // Range select: add everything from lastMultiIndex to idx
+    const from = Math.min(lastMultiIndex, idx);
+    const to   = Math.max(lastMultiIndex, idx);
+    for (let i = from; i <= to; i++) {
+      if (filteredItems[i]) multiSelected.add(filteredItems[i].path);
+    }
+  } else {
+    // Ctrl/⌘: toggle single item
+    if (multiSelected.has(item.path)) multiSelected.delete(item.path);
+    else                              multiSelected.add(item.path);
+    lastMultiIndex = idx;
+  }
+  updateMultiSelectCards();
+  updateMultiSelectBar();
+}
+
+function updateMultiSelectCards() {
+  document.querySelectorAll('.item-card').forEach(card => {
+    const on = multiSelected.has(card.dataset.path);
+    card.classList.toggle('is-multi-selected', on);
+    const cb = card.querySelector('.item-check');
+    if (cb) cb.checked = on;
+  });
+}
+
+function updateMultiSelectBar() {
+  const bar = el('multi-select-bar');
+  if (!bar) return;
+  const count = multiSelected.size;
+  bar.classList.toggle('hidden', count === 0);
+  if (count === 0) return;
+  const totalBytes = allItems
+    .filter(i => multiSelected.has(i.path))
+    .reduce((sum, i) => sum + (i.total_size || 0), 0);
+  setText('multi-select-info', `${count} item${count > 1 ? 's' : ''} selected · ${bytesToHuman(totalBytes)}`);
+}
+
+function markMultiSelected() {
+  multiSelected.forEach(path => markedItems.add(path));
+  updateMarkedSidebar();
+  document.querySelectorAll('.item-card').forEach(card => {
+    if (!multiSelected.has(card.dataset.path)) return;
+    card.classList.add('is-marked');
+    const btn = card.querySelector('.mark-btn');
+    if (btn) { btn.className = 'mark-btn marked'; btn.textContent = '🗑️ Marked'; }
+  });
+  clearMultiSelect();
+  updateDetailMarkBtn();
+}
+
+function clearMultiSelect() {
+  multiSelected.clear();
+  lastMultiIndex = -1;
+  updateMultiSelectCards();
+  updateMultiSelectBar();
+}
+
 function exportMarked() {
   if (!markedItems.size) return;
+  const nameByPath = {};
+  (window.__javData__?.items || []).forEach(item => { nameByPath[item.path] = item.name; });
   const lines = ['# Marked for Deletion', `# Generated: ${new Date().toISOString()}`, ''];
-  for (const path of markedItems) lines.push(path);
+  for (const path of markedItems) lines.push('# ' + (nameByPath[path] ?? path));
   const blob = new Blob([lines.join('\r\n')], { type: 'text/plain;charset=utf-8' });
   const url  = URL.createObjectURL(blob);
   const a    = Object.assign(document.createElement('a'), {

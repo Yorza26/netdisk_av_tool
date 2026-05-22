@@ -7,7 +7,8 @@ Fetches metadata (cover, title, actresses) from jav321.com — no cookies needed
 Then open index.html directly in your browser — no server needed.
 
 Usage:
-    python scan.py                          # full scan + metadata fetch
+    python scan.py                          # full scan + metadata (100 per run)
+    python scan.py --all-meta               # full scan + fetch ALL missing metadata
     python scan.py --skip-meta              # fast scan, no metadata
     python scan.py --test-bango MIDE-332    # test metadata fetch for one bango
 """
@@ -459,15 +460,15 @@ def save_meta_cache(cache: dict) -> None:
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
 
-def enrich_with_meta(items: list, cache: dict) -> int:
-    """Fetch missing metadata from jav321.com (up to META_PER_RUN items).
+def enrich_with_meta(items: list, cache: dict, all_meta: bool = False) -> int:
+    """Fetch missing metadata from jav321.com (up to META_PER_RUN items, or all if all_meta=True).
     Saves cache after every successful fetch. Handles Ctrl+C gracefully.
     Returns number of newly fetched items."""
     need_fetch = [e for e in items if e.get('is_jav') and e.get('bango')
                   and e['bango'] not in cache]
     ok = fail = 0
     total_needed = len(need_fetch)
-    limit        = min(total_needed, META_PER_RUN)
+    limit        = total_needed if all_meta else min(total_needed, META_PER_RUN)
 
     if total_needed:
         remaining = total_needed - limit
@@ -540,7 +541,7 @@ def _write_data_js(data: dict) -> None:
         f.write(';\n')
 
 
-def main(skip_meta: bool = False):
+def main(skip_meta: bool = False, all_meta: bool = False):
     print("=" * 55)
     print("  JAV Collection Scanner  (stdlib only)")
     print("=" * 55)
@@ -549,6 +550,8 @@ def main(skip_meta: bool = False):
     print(f"  Output : {OUTPUT_FILE}")
     if skip_meta:
         print("  Meta   : SKIPPED (--skip-meta)")
+    elif all_meta:
+        print("  Meta   : ALL (no per-run limit)")
     print("=" * 55)
     print()
 
@@ -585,7 +588,7 @@ def main(skip_meta: bool = False):
     # ── Enrich with jav321 metadata (cover / title / actresses) ──────
     print("Enriching with metadata ...")
     meta_cache = load_meta_cache()
-    fetched = enrich_with_meta(data['items'], meta_cache)
+    fetched = enrich_with_meta(data['items'], meta_cache, all_meta=all_meta)
 
     # ── Re-write data.js with metadata embedded ───────────────────────
     if fetched:
@@ -617,17 +620,17 @@ def test_meta_bango(bango: str) -> None:
 
 if __name__ == '__main__':
     args = sys.argv[1:]
-    if len(args) == 2 and args[0] == '--test-meta':
-        # Legacy: kept for compat, now just tests live fetch via jav321
-        test_meta_bango(args[1])
-    elif len(args) == 2 and args[0] == '--test-bango':
+    if len(args) == 2 and args[0] in ('--test-meta', '--test-bango'):
         test_meta_bango(args[1])
     elif args == ['--skip-meta']:
         main(skip_meta=True)
+    elif args == ['--all-meta']:
+        main(all_meta=True)
     elif not args:
         main()
     else:
         print("Usage:")
-        print("  python scan.py                          # full scan + metadata fetch")
+        print("  python scan.py                          # full scan + metadata (100 per run)")
+        print("  python scan.py --all-meta               # full scan + fetch ALL missing metadata")
         print("  python scan.py --skip-meta              # fast scan, no metadata")
         print("  python scan.py --test-bango <BANGO>     # test jav321 fetch for one bango")

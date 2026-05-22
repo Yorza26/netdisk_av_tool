@@ -284,9 +284,60 @@ select {
   cursor: pointer;
   transition: border-color .15s, background .15s;
 }
-.item-card:hover        { border-color: var(--accent); background: var(--surface-alt); }
-.item-card.is-selected  { border-color: var(--accent-blue); }
-.item-card.is-marked    { border-color: var(--accent-red); background: rgba(239,83,80,.07); }
+.item-card:hover              { border-color: var(--accent); background: var(--surface-alt); }
+.item-card.is-selected        { border-color: var(--accent-blue); }
+.item-card.is-marked          { border-color: var(--accent-red); background: rgba(239,83,80,.07); }
+.item-card.is-multi-selected  { border-color: var(--accent-blue); background: rgba(79,195,247,.08); box-shadow: 0 0 0 2px rgba(79,195,247,.25); }
+.item-card.is-multi-selected.is-marked { border-color: var(--accent-red); }
+.item-check-col {
+  width: 22px;
+  min-width: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity .15s;
+  flex-shrink: 0;
+}
+.item-card:hover .item-check-col,
+.item-card.is-multi-selected .item-check-col { opacity: 1; }
+.item-check {
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+  accent-color: var(--accent-blue);
+}
+
+/* ── Multi-select floating action bar ─────────── */
+#multi-select-bar {
+  position: fixed;
+  bottom: 0;
+  left: var(--sidebar-w);
+  right: 0;
+  background: #1a1a40;
+  border-top: 2px solid var(--accent-blue);
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  z-index: 200;
+  box-shadow: 0 -4px 20px rgba(0,0,0,.5);
+}
+.ms-icon { font-size: 18px; }
+.ms-info { font-weight: 600; color: var(--accent-blue); font-size: 14px; }
+.ms-hint { flex: 1; color: var(--text-muted); font-size: 12px; }
+.ms-btn {
+  padding: 6px 14px;
+  border-radius: 7px;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: opacity .15s;
+}
+.ms-btn:hover { opacity: .85; }
+.ms-btn-mark  { background: var(--accent-red);  color: #fff; }
+.ms-btn-clear { background: var(--surface-alt); color: var(--text-muted); border: 1px solid var(--border); }
 
 .item-series-badge {
   width: 52px;
