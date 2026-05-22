@@ -555,7 +555,9 @@ function renderDetailShell(item) {
       : '';
     metaHtml = `
       <div class="jav-info-card">
-        ${item.cover ? `<img class="jav-cover" src="${esc(item.cover)}" alt="cover" loading="lazy" onerror="this.style.display='none'">` : ''}
+        ${item.cover ? `<img class="jav-cover" src="${esc(item.cover)}" alt="cover" loading="lazy"
+          style="cursor:zoom-in" onclick="openCoverLightbox(this.src)"
+          onerror="this.style.display='none'">` : ''}
         <div class="jav-meta">
           ${item.title ? `<div class="jav-title">${esc(item.title)}</div>` : ''}
           ${actressHtml}
@@ -626,6 +628,29 @@ function updateDetailMarkBtn() {
   btn.className   = 'detail-mark-btn' + (marked ? ' unmark' : '');
   btn.textContent = marked ? '↩️ Unmark' : '🗑️ Mark for Deletion';
 }
+
+
+// ─────────────────────────────────────────────
+// Cover image lightbox
+// ─────────────────────────────────────────────
+
+function openCoverLightbox(src) {
+  const lb  = el('cover-lightbox');
+  const img = el('cover-lightbox-img');
+  if (!lb || !img) return;
+  img.src = src;
+  lb.classList.remove('hidden');
+}
+
+function closeCoverLightbox() {
+  const lb = el('cover-lightbox');
+  if (lb) lb.classList.add('hidden');
+}
+
+// Close lightbox on Escape
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeCoverLightbox();
+});
 
 
 // ─────────────────────────────────────────────
