@@ -416,13 +416,20 @@ function updateDetailMarkBtn() {
 // Javbus iframe overlay
 // ─────────────────────────────────────────────
 
+// Javbus uses the raw date-number for uncensored studios, not the full bango.
+// e.g. 1PONDO-081413-406 → /081413-406,  CARIBBEANCOM-102720-001 → /102720-001
+function javbusSlug(bango) {
+  return bango.replace(/^(?:1PONDO|CARIBBEANCOM|CARIBPR)[-_]/i, '');
+}
+
 function openJavbus(bango) {
   const overlay = el('javbus-overlay');
   const iframe  = el('javbus-iframe');
   const bangoEl = el('javbus-bango-label');
   const link    = el('javbus-newtab');
 
-  const url = `https://www.javbus.com/${encodeURIComponent(bango)}`;
+  const slug = javbusSlug(bango);
+  const url  = `https://www.javbus.com/${encodeURIComponent(slug)}`;
   if (bangoEl) bangoEl.textContent = bango;
   if (link)    link.href = url;
   iframe.src = url;
