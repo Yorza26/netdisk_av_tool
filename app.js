@@ -423,10 +423,16 @@ function updateDetailMarkBtn() {
 // Javbus iframe overlay
 // ─────────────────────────────────────────────
 
-// Javbus uses the raw date-number for uncensored studios, not the full bango.
-// e.g. 1PONDO-081413-406 → /081413-406,  CARIBBEANCOM-102720-001 → /102720-001
+// Javbus URL slug differs by studio:
+//   1PONDO-052611-102     → 052611_102   (underscore)
+//   CARIBBEANCOM-102720-001 → 102720-001  (dash)
+//   everything else       → bango as-is
 function javbusSlug(bango) {
-  return bango.replace(/^(?:1PONDO|CARIBBEANCOM|CARIBPR)[-_]/i, '');
+  let m = bango.match(/^1PONDO-(\d{6})-(\d{3})$/i);
+  if (m) return `${m[1]}_${m[2]}`;
+  m = bango.match(/^(?:CARIBBEANCOM|CARIBPR)-(\d{6})-(\d{3})$/i);
+  if (m) return `${m[1]}-${m[2]}`;
+  return bango;
 }
 
 function openJavbus(bango) {
