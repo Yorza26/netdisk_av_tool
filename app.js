@@ -774,6 +774,24 @@ function clearMultiSelect() {
   updateMultiSelectBar();
 }
 
+function copyFor115() {
+  const names = allItems
+    .filter(i => multiSelected.has(i.path) && i.bango)
+    .map(i => i.bango)
+    .join(' | ');
+  if (!names) return;
+
+  const btn = document.querySelector('.ms-btn-115');
+  const reset = () => { if (btn) { btn.textContent = '📋 Copy for 115'; } };
+
+  navigator.clipboard.writeText(names).then(() => {
+    if (btn) { btn.textContent = '✓ Copied!'; setTimeout(reset, 1500); }
+  }).catch(() => {
+    // Clipboard API blocked (e.g. file:// without HTTPS) — fall back to prompt
+    prompt('Copy this 115 search string (Ctrl+A, Ctrl+C):', names);
+  });
+}
+
 function exportMarked() {
   if (!markedItems.size) return;
   const nameByPath = {};

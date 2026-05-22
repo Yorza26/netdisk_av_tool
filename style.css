@@ -336,8 +336,9 @@ select {
   transition: opacity .15s;
 }
 .ms-btn:hover { opacity: .85; }
-.ms-btn-mark  { background: var(--accent-red);  color: #fff; }
-.ms-btn-clear { background: var(--surface-alt); color: var(--text-muted); border: 1px solid var(--border); }
+.ms-btn-115   { background: var(--accent-blue);  color: #000; font-weight: 700; }
+.ms-btn-mark  { background: var(--accent-red);   color: #fff; }
+.ms-btn-clear { background: var(--surface-alt);  color: var(--text-muted); border: 1px solid var(--border); }
 
 .item-series-badge {
   width: 52px;
