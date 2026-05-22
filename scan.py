@@ -3,12 +3,10 @@
 """
 JAV Collection Scanner  —  stdlib only, no pip install needed
 Queries Everything's HTTP API and saves a snapshot to data.js.
-data.js is a plain JavaScript file that assigns the data to a global
-variable so index.html can load it as a <script> tag — no server needed.
+Then open index.html directly in your browser — no server needed.
 
 Usage:
-    python scan.py               # saves to data.js
-    python scan.py --help
+    python scan.py
 """
 
 import urllib.request
@@ -307,82 +305,6 @@ def process_results(raw: list, root_dir: str) -> dict:
 
 
 # ─────────────────────────────────────────────
-# HTML inline injection
-# ─────────────────────────────────────────────
-
-_DATA_START = '<!--jav-data-start-->'
-_DATA_END   = '<!--jav-data-end-->'
-_APP_START  = '<!--jav-app-start-->'
-_APP_END    = '<!--jav-app-end-->'
-
-def _inject_into_html(data: dict) -> None:
-    """
-    Embed data + app.js as inline <script> blocks inside index.html so it
-    works by double-clicking — no server needed.
-
-    Chrome blocks <script src="file.js"> from file:// pages but always runs
-    inline <script> blocks.  Sentinel comments allow clean re-injection on
-    repeated scan runs.
-    """
-    here      = os.path.dirname(os.path.abspath(__file__))
-    html_path = os.path.join(here, 'index.html')
-    app_path  = os.path.join(here, 'app.js')
-
-    if not os.path.exists(html_path):
-        print("  [WARN] index.html not found — skipping injection")
-        return
-    if not os.path.exists(app_path):
-        print("  [WARN] app.js not found — skipping injection")
-        return
-
-    with open(html_path, 'r', encoding='utf-8') as f:
-        html = f.read()
-    with open(app_path,  'r', encoding='utf-8') as f:
-        app_js = f.read()
-
-    # ── Data block ────────────────────────────────────────────────────────
-    # Compact JSON; escape </ so it can't prematurely close the script tag
-    compact = json.dumps(data, ensure_ascii=False, separators=(',', ':'))
-    compact = compact.replace('</', r'<\/')
-    data_block = (
-        f'{_DATA_START}'
-        f'<script>window.__javData__={compact};</script>'
-        f'{_DATA_END}'
-    )
-
-    # ── App block ─────────────────────────────────────────────────────────
-    # app.js content is plain JS — no </ to worry about in app source
-    app_block = f'{_APP_START}<script>\n{app_js}\n</script>{_APP_END}'
-
-    def replace_or_first(src, start, end, new_block, fallback_tag):
-        r"""Replace sentinel block if present, else replace fallback_tag.
-
-        Use a lambda replacement so backslashes in new_block are treated
-        literally (re.sub interprets \n, \s etc. in plain string replacements).
-        """
-        updated = re.sub(
-            re.escape(start) + r'.*?' + re.escape(end),
-            lambda m: new_block, src, flags=re.DOTALL
-        )
-        if updated == src:
-            updated = src.replace(fallback_tag, new_block)
-        return updated
-
-    updated = replace_or_first(html,    _DATA_START, _DATA_END, data_block,
-                                '<script src="data.js"></script>')
-    updated = replace_or_first(updated, _APP_START,  _APP_END,  app_block,
-                                '<script src="app.js"></script>')
-
-    if updated == html:
-        print("  [WARN] Could not find injection points in index.html")
-        return
-
-    with open(html_path, 'w', encoding='utf-8') as f:
-        f.write(updated)
-    print(f"  [OK] Data injected inline into index.html")
-
-
-# ─────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────
 
@@ -426,7 +348,7 @@ def main():
     for series, count in list(s['series_count'].items())[:15]:
         print(f"   {'|' * min(count, 35):<35}  {series}  ({count})")
     print()
-    print("   Done — run start.bat to open in browser.")
+    print("   Done — open index.html in your browser.")
     print()
 
 

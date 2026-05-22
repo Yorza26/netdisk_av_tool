@@ -1,3 +1,0 @@
-# Only needed for scan.py (queries Everything HTTP API).
-# serve.py uses Python standard library only — no pip install required.
-requests>=2.31.0

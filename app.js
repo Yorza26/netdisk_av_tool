@@ -29,33 +29,15 @@ let seriesSortAsc = false;
 
 document.addEventListener('DOMContentLoaded', init);
 
-async function init() {
-  // Primary path: data.js was loaded as a <script> tag (works over HTTP via start.bat)
+function init() {
   if (window.__javData__) {
     appData = window.__javData__;
     onDataReady();
-    return;
+  } else {
+    // data.js not loaded — user needs to run scan.py first
+    el('loading').classList.add('hidden');
+    el('error-msg').classList.remove('hidden');
   }
-
-  // Fallback: try fetching data.js directly (also works over HTTP, fails on file://)
-  try {
-    const r = await fetch('data.js?' + Date.now());
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const text = await r.text();
-    // Strip the JS wrapper: "window.__javData__ = {...};"
-    const json = text.replace(/^\s*\/\/[^\n]*\n/gm, '')   // strip // comments
-                     .replace(/^\s*window\.__javData__\s*=\s*/, '')
-                     .replace(/;\s*$/, '').trim();
-    appData = JSON.parse(json);
-    onDataReady();
-    return;
-  } catch (e) {
-    // fetch failed — user is probably opening index.html directly from file://
-  }
-
-  // Both failed → show helpful error
-  el('loading').classList.add('hidden');
-  el('error-msg').classList.remove('hidden');
 }
 
 function reloadData() {
