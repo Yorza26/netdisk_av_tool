@@ -25,7 +25,7 @@ let seriesSortKey  = 'count';
 let seriesSortAsc  = false;
 
 // ── Lazy-loading (Browse + Classifier) ───────────────────────────────
-const BROWSE_PAGE    = 20;   // items rendered per batch
+const BROWSE_PAGE    = 15;   // items rendered per batch
 let   browseOffset   = 0;
 let   browseObserver = null;
 let   clOffset       = 0;
