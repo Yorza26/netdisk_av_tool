@@ -272,6 +272,7 @@ select {
 /* ── Item list (Browse + Non-JAV) ─────────────── */
 
 .item-list { display: flex; flex-direction: column; gap: 8px; }
+.browse-sentinel { height: 1px; }   /* invisible trigger for IntersectionObserver */
 
 .item-card {
   background: var(--surface);
@@ -792,4 +793,54 @@ tbody td { padding: 9px 14px; }
 @media (max-width: 900px) {
   .charts-row { grid-template-columns: 1fr; }
   #detail-panel { position: fixed; right: 0; top: 0; height: 100vh; z-index: 100; box-shadow: -4px 0 20px rgba(0,0,0,.5); }
+}
+
+/* ── Mobile (phone) — sidebar collapses to icon-only strip ── */
+@media (max-width: 680px) {
+  :root { --sidebar-w: 50px; }
+
+  #sidebar {
+    width: 50px;
+    min-width: 50px;
+  }
+
+  /* Hide text labels; keep emoji icons */
+  .brand-name,
+  .sidebar-info,
+  #marked-sidebar { display: none !important; }
+
+  .sidebar-brand { justify-content: center; padding: 14px 0; }
+
+  /* Nav buttons: icon only, centred */
+  .nav-btn {
+    font-size: 0;          /* hides the text node */
+    justify-content: center;
+    padding: 10px 0;
+    border-radius: 8px;
+  }
+  .nav-btn .nav-icon { font-size: 20px; }
+  .badge { display: none !important; }
+
+  /* Main content — give it room to breathe */
+  #main { padding: 12px 10px; }
+
+  /* Item cards — drop non-essential columns */
+  .item-check-col { display: none; }
+  .item-series-badge { display: none; }
+  .item-thumb { width: 70px; min-width: 70px; height: 46px; }
+  .item-size  { display: none; }
+  .mark-btn   { display: none; }
+
+  /* Detail panel — full width overlay on mobile */
+  #detail-panel {
+    width: 100vw;
+    min-width: unset;
+    left: 0;
+    right: 0;
+  }
+
+  /* Toolbar search/controls — stack vertically */
+  .toolbar { flex-wrap: wrap; gap: 6px; }
+  .toolbar-controls { flex-wrap: wrap; gap: 6px; }
+  #search-box { width: 100%; }
 }

@@ -23,6 +23,13 @@ let countChart     = null;
 let sizeChart      = null;
 let seriesSortKey  = 'count';
 let seriesSortAsc  = false;
+
+// ── Lazy-loading (Browse + Classifier) ───────────────────────────────
+const BROWSE_PAGE    = 20;   // items rendered per batch
+let   browseOffset   = 0;
+let   browseObserver = null;
+let   clOffset       = 0;
+let   clObserver     = null;
 let actressSortKey = 'count';
 let actressSortAsc = false;
 
@@ -264,13 +271,63 @@ function applyFilters() {
   renderItemList(items, 'item-list');
 }
 
+function disconnectBrowseObserver() {
+  if (browseObserver) { browseObserver.disconnect(); browseObserver = null; }
+}
+
+function disconnectClObserver() {
+  if (clObserver) { clObserver.disconnect(); clObserver = null; }
+}
+
 function renderItemList(items, containerId) {
   const container = el(containerId);
   if (!container) return;
-  const frag = document.createDocumentFragment();
-  items.forEach((item, idx) => frag.appendChild(createItemCard(item, idx)));
+
+  // Non-browse containers (nonjav-list etc.): render everything at once
+  if (containerId !== 'item-list') {
+    const frag = document.createDocumentFragment();
+    items.forEach((item, idx) => frag.appendChild(createItemCard(item, idx)));
+    container.innerHTML = '';
+    container.appendChild(frag);
+    return;
+  }
+
+  // Browse: render in pages, load next page when sentinel scrolls into view
+  disconnectBrowseObserver();
+  browseOffset = 0;
   container.innerHTML = '';
-  container.appendChild(frag);
+
+  function appendNextPage() {
+    const end  = Math.min(browseOffset + BROWSE_PAGE, items.length);
+    const frag = document.createDocumentFragment();
+    for (let i = browseOffset; i < end; i++) {
+      frag.appendChild(createItemCard(items[i], i));
+    }
+    browseOffset = end;
+
+    // Remove stale sentinel before appending new items
+    const old = container.querySelector('.browse-sentinel');
+    if (old) old.remove();
+
+    container.appendChild(frag);
+
+    if (browseOffset < items.length) {
+      // Add a sentinel div that triggers the next page when it nears the viewport
+      const sentinel = document.createElement('div');
+      sentinel.className = 'browse-sentinel';
+      container.appendChild(sentinel);
+
+      browseObserver = new IntersectionObserver(entries => {
+        if (entries[0].isIntersecting) {
+          disconnectBrowseObserver();
+          appendNextPage();
+        }
+      }, { rootMargin: '300px' });   // start loading 300px before sentinel is visible
+      browseObserver.observe(sentinel);
+    }
+  }
+
+  appendNextPage();
 }
 
 function createItemCard(item, idx = -1) {
@@ -316,6 +373,7 @@ function createItemCard(item, idx = -1) {
     thumb.src = item.cover;
     thumb.alt = '';
     thumb.loading = 'lazy';
+    thumb.referrerPolicy = 'no-referrer';   // bypass hotlink protection on image hosts
     thumb.onerror = function() { this.style.display = 'none'; };
     card.appendChild(thumb);
   }
@@ -556,6 +614,7 @@ function renderDetailShell(item) {
     metaHtml = `
       <div class="jav-info-card">
         ${item.cover ? `<img class="jav-cover" src="${esc(item.cover)}" alt="cover" loading="lazy"
+          referrerpolicy="no-referrer"
           style="cursor:zoom-in" onclick="openCoverLightbox(this.src)"
           onerror="this.style.display='none'">` : ''}
         <div class="jav-meta">
@@ -606,8 +665,32 @@ function renderFileList(folderPath, files) {
   }).join('');
 }
 
-// Convert a Windows path to a file:// URL
+// Convert a Windows path to an Everything HTTP server URL.
+//
+// When the page is served over HTTP (e.g. http://192.168.1.101:8080/),
+// window.location.hostname IS the PC's IP -- no config.js dependency.
+// We build:  E:\115\foo\bar.mp4  ->  http://192.168.1.101/E%3A/115/foo/bar.mp4
+// Each path segment is encodeURIComponent'd so spaces, brackets, CJK chars
+// and the colon in "E:" are all properly escaped, matching Everything's own links.
+//
+// The Everything port defaults to 80. If you run Everything on a different port,
+// set everythingPort in serve.py (it writes config.js with that value).
+//
+// Falls back to file:// URLs when opened directly (file:// protocol on PC).
 function localUrl(winPath) {
+  if (window.location.protocol !== 'file:') {
+    const cfg = window.__serverConfig__;
+    const everythingPort = (cfg && cfg.everythingPort) || 80;
+    const host = window.location.hostname;
+    const base = everythingPort === 80
+      ? `http://${host}`
+      : `http://${host}:${everythingPort}`;
+    const encoded = winPath.replace(/\\/g, '/')
+                           .split('/')
+                           .map(s => encodeURIComponent(s))
+                           .join('/');
+    return base + '/' + encoded;
+  }
   return 'file:///' + winPath.replace(/\\/g, '/');
 }
 
@@ -1000,10 +1083,9 @@ function renderClList() {
 
   const list = el('cl-list');
   if (!list) return;
-  const frag = document.createDocumentFragment();
 
-  items.forEach((item, idx) => {
-    // Reuse createItemCard for checkbox / mark-btn / detail-click / range-select
+  // Helper: build one classifier card (base card + cat badge + override btn)
+  function makeClCard(item, idx) {
     const card = createItemCard(item, idx);
 
     // Insert classifier category badge right after the checkbox col (before series badge)
@@ -1013,13 +1095,13 @@ function renderClList() {
     catBadge.textContent = (CL_ICONS[cat] ?? '') + ' ' + cat;
     card.insertBefore(catBadge, card.children[1]);   // index 0 = checkbox, 1 = series badge
 
-    // Append override button (cycles category, session-only)
+    // Override button — cycles category (session-only)
     const btn = document.createElement('button');
     btn.className   = 'cl-override-btn';
     btn.title       = 'Cycle category (session only)';
     btn.textContent = '✎';
     btn.onclick = e => {
-      e.stopPropagation();   // don't open detail panel
+      e.stopPropagation();
       const cur  = clGetCategory(item) ?? 'other';
       const next = CL_CYCLE[(CL_CYCLE.indexOf(cur) + 1) % CL_CYCLE.length];
       clOverrides[item.path] = next;
@@ -1029,10 +1111,41 @@ function renderClList() {
       buildClStatsBar();
     };
     card.appendChild(btn);
+    return card;
+  }
 
-    frag.appendChild(card);
-  });
-
+  // Lazy-load in pages
+  disconnectClObserver();
+  clOffset = 0;
   list.innerHTML = '';
-  list.appendChild(frag);
+
+  function appendNextClPage() {
+    const end  = Math.min(clOffset + BROWSE_PAGE, items.length);
+    const frag = document.createDocumentFragment();
+    for (let i = clOffset; i < end; i++) {
+      frag.appendChild(makeClCard(items[i], i));
+    }
+    clOffset = end;
+
+    const old = list.querySelector('.browse-sentinel');
+    if (old) old.remove();
+
+    list.appendChild(frag);
+
+    if (clOffset < items.length) {
+      const sentinel = document.createElement('div');
+      sentinel.className = 'browse-sentinel';
+      list.appendChild(sentinel);
+
+      clObserver = new IntersectionObserver(entries => {
+        if (entries[0].isIntersecting) {
+          disconnectClObserver();
+          appendNextClPage();
+        }
+      }, { rootMargin: '300px' });
+      clObserver.observe(sentinel);
+    }
+  }
+
+  appendNextClPage();
 }

@@ -27,10 +27,15 @@ from datetime import datetime
 # ── Windows console UTF-8 fix ──────────────────
 # Without this, printing Chinese/non-ASCII paths on Windows
 # raises UnicodeEncodeError (cp932/cp936 codec issues).
+# line_buffering=True ensures every print() flushes immediately — without it
+# the new TextIOWrapper defaults to full-block buffering and output only appears
+# after the buffer fills or the process exits (looks like nothing until Ctrl+C).
 if sys.stdout and hasattr(sys.stdout, 'buffer'):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8',
+                                  errors='replace', line_buffering=True)
 if sys.stderr and hasattr(sys.stderr, 'buffer'):
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8',
+                                  errors='replace', line_buffering=True)
 from collections import defaultdict
 
 # ─────────────────────────────────────────────
@@ -38,13 +43,15 @@ from collections import defaultdict
 # ─────────────────────────────────────────────
 ROOT_DIRS = [
     r"E:\115\云下载",
-    # r"E:\115\!NSFW",
+    r"E:\115\!NSFW\CenPack\H265",
+    r"E:\115\!NSFW\4k",
+    r"E:\115\!NSFW\Anthology\Gachinco",
 ]
 OUTPUT_FILE     = "data.js"
 META_CACHE_FILE     = "meta_cache.json"
 CLASSIFY_CACHE_FILE = "classify_cache.json"   # written by classify.py
-META_PER_RUN    = 100    # max new items to fetch per scan run
-META_DELAY      = 1.0    # seconds between metadata requests (be polite)
+META_PER_RUN    = 50    # max new items to fetch per scan run
+META_DELAY      = 0.3    # seconds between metadata requests (be polite)
 EVERYTHING_PORT = 80     # Change if you changed it in Everything's options
 
 # ─────────────────────────────────────────────
@@ -141,6 +148,11 @@ _BANGO_PATTERNS = [
     #   (1000人斬り)(YYMMDD_name) or (1000giri)(YYMMDD)  →  1000GIRI-…
     (re.compile(r'\(1000[^\)]{0,6}\)\((\d{6}[a-z_]*)\)', re.I),
      lambda m: (f"1000GIRI-{m.group(1).rstrip('_')}", "1000GIRI")),
+
+    # Gachinco (g-area): GACHI-0001, GACHI_0001, GACHIG_001, GACHIP_001
+    # Files often use underscore separator which the general [-.]  pattern misses.
+    (re.compile(r'(?<![A-Z\d])(GACHI[GP]?)[-_](\d{3,5})(?!\d)', re.I),
+     lambda m: (f"{m.group(1).upper()}-{m.group(2)}", m.group(1).upper())),
 
     # Numeric-prefix series: 300MAAN-456, 200GANA-123, 230ORECO-171
     (re.compile(r'(?<![A-Z\d])(\d{1,3}[A-Z]{2,8})[-.](\d{2,5})(?!\d)', re.I),
@@ -330,7 +342,21 @@ def process_results(raw: list, root_dirs: list) -> dict:
             d1[key1] = new_entry(top, os.path.join(norm_root, top))
 
         if len(parts) == 1:
-            continue  # the d1 folder itself
+            # Depth-1 folder → just the container itself, nothing to credit.
+            # Depth-1 FILE → the root points directly to a flat file directory
+            # (e.g. ROOT_DIRS = ["…/H265"]).  Credit size/count to this entry
+            # so it appears as a real item with correct stats.
+            if not is_folder and size > 0:
+                ext_1 = os.path.splitext(name)[1].lower()
+                e1 = d1[key1]
+                e1['total_size'] += size
+                e1['file_count'] += 1
+                if ext_1 in VIDEO_EXTS:
+                    e1['video_count'] += 1
+                e1['files'].append({'name': name, 'size': size,
+                                    'size_human': bytes_to_human(size),
+                                    'ext': ext_1})
+            continue
 
         sub = parts[1]
 
@@ -381,9 +407,50 @@ def process_results(raw: list, root_dirs: list) -> dict:
         for e in subs.values():
             infer_bango(e)
 
+    # ── Flat-pack detection ───────────────────────────────────────────────
+    # A "flat pack" is a folder whose OWN name has no bango, but whose
+    # direct files each carry distinct bangos (e.g. H265/ holding
+    # ABF-090.H265.mp4, PRED-123.H265.mp4, …).  Such a folder should
+    # surface each file as its own item rather than being merged into one.
+    def expand_flat_pack(entry: dict) -> list:
+        """Return a list of per-file items if entry is a flat pack,
+        otherwise return [entry] unchanged."""
+        if not entry.get('is_jav'):
+            return [entry]
+        # If the folder name itself yielded a bango, it's a normal item
+        if extract_bango(entry['name'])[0]:
+            return [entry]
+        # Gather (bango, series, file) for every direct file that has a bango
+        tagged = []
+        for f in entry.get('files', []):
+            fb, fs = extract_bango(f['name'])
+            if fb:
+                tagged.append((fb, fs, f))
+        # Need ≥2 distinct bangos to confirm it's a flat pack
+        if len({b for b, _, _ in tagged}) < 2:
+            return [entry]
+        # Split: one virtual item per file
+        result = []
+        for fb, fs, f in tagged:
+            ext = f.get('ext', '')
+            result.append({
+                'name':             fb,   # use bango as display name
+                'path':             os.path.join(entry['path'], f['name']),
+                'bango':            fb,
+                'series':           fs,
+                'is_jav':           True,
+                'total_size':       f['size'],
+                'total_size_human': f.get('size_human', bytes_to_human(f['size'])),
+                'file_count':       1,
+                'video_count':      1 if ext in VIDEO_EXTS else 0,
+                'files':            [f],
+            })
+        return result
+
     # ── Decide which folders become items ────────────────────────────────
     # • d1 has bango                       → JAV item
     # • d1 has no bango, ≥1 JAV child     → collection: surface d2 children
+    #   (d2 children that are flat packs are further split into file items)
     # • d1 has no bango, no JAV children  → non-JAV item
     items = []
     for top, d1e in d1.items():
@@ -391,8 +458,9 @@ def process_results(raw: list, root_dirs: list) -> dict:
         if d1e['is_jav'] or not subs:
             items.append(d1e)
         elif any(s['is_jav'] for s in subs.values()):
-            # Collection folder — each child becomes its own item
-            items.extend(subs.values())
+            # Collection folder — surface each child (splitting flat packs)
+            for sub_entry in subs.values():
+                items.extend(expand_flat_pack(sub_entry))
         else:
             # Non-JAV folder whose children are also non-JAV → keep as one item
             items.append(d1e)
@@ -520,9 +588,261 @@ def _fetch_one_meta(bango: str) -> dict:
     return {'cover': cover, 'title': title, 'actresses': actresses}
 
 
+# ─────────────────────────────────────────────
+# Uncensored metadata: javhoo.com (primary) + avsox.click (fallback)
+# ─────────────────────────────────────────────
+
+def _javhoo_url(bango: str) -> str:
+    """Build a direct javhoo.com page URL for any bango.
+
+    javhoo uses the bango directly in the URL path for most studios:
+      HEYZO-3837         →  /ja/HEYZO-3837
+      NHDTB-001          →  /ja/NHDTB-001
+      MIDE-332           →  /ja/MIDE-332
+      FC2-PPV-1234567    →  /ja/FC2-PPV-1234567
+
+    For date-based codes (1PONDO / CARIBBEANCOM / CARIBPR), the studio prefix
+    is stripped and the remaining MMDDYY-NNN part is used directly:
+      1PONDO-052124-001      →  /ja/052124-001
+      CARIBBEANCOM-102720-001 →  /ja/102720-001
+      CARIBPR-041426-001     →  /ja/041426-001
+    """
+    # 1PONDO-MMDDYY-NNN  →  /ja/MMDDYY-NNN
+    m = re.match(r'^1PONDO-(\d{6})-(\d{3,4})$', bango, re.I)
+    if m:
+        return f"https://www.javhoo.com/ja/{m.group(1)}-{m.group(2)}"
+    # CARIBBEANCOM-MMDDYY-NNN  →  /ja/MMDDYY-NNN
+    m = re.match(r'^CARIBBEANCOM-(\d{6})-(\d{3,4})$', bango, re.I)
+    if m:
+        return f"https://www.javhoo.com/ja/{m.group(1)}-{m.group(2)}"
+    # CARIBPR-MMDDYY-NNN  →  /ja/MMDDYY-NNN
+    m = re.match(r'^CARIBPR-(\d{6})-(\d{3,4})$', bango, re.I)
+    if m:
+        return f"https://www.javhoo.com/ja/{m.group(1)}-{m.group(2)}"
+    # All others: use bango as-is
+    return f"https://www.javhoo.com/ja/{bango}"
+
+
+def _fetch_one_meta_javhoo(bango: str) -> dict:
+    """Fetch cover / title / actresses from javhoo.com for any bango.
+    Returns {} on not-found (HTTP 404), {'_err': msg} on network error."""
+    url = _javhoo_url(bango)
+
+    headers = {
+        'User-Agent':      _META_UA,
+        'Accept-Language': 'ja,zh-TW;q=0.9,zh;q=0.8,en;q=0.7',
+        'Referer':         'https://www.javhoo.com/',
+    }
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=12) as r:
+            html = r.read().decode('utf-8', errors='replace')
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return {}
+        return {'_err': f"javhoo HTTP {e.code}"}
+    except Exception as exc:
+        return {'_err': f"javhoo {exc}"}
+
+    # Cover image comes in two formats depending on studio:
+    #   date codes (1PONDO/CARIB): src="https://pics.javhoo.net/YYYY/MM/{code}_b.jpg"
+    #   series codes (NHDTB/MIDE/…): src="https://pics.javhoo.net/YYYY/MM/cover/{bango}.jpg"
+    cover = ''
+    m = re.search(r'src="(https://pics\.javhoo\.net/[^"]+_b\.jpg)"', html)
+    if m:
+        cover = m.group(1)
+    if not cover:
+        m = re.search(r'src="(https://pics\.javhoo\.net/[^"]+/cover/[^"]+\.jpg)"', html)
+        if m:
+            cover = m.group(1)
+
+    # Title: <h1> contains "BANGO title actress" — strip leading bango/date-code
+    # For 1PONDO/CARIB the bango in the H1 is the stripped form (MMDDYY-NNN),
+    # so we need to strip both the internal bango and the URL-form prefix.
+    title = ''
+    m = re.search(r'<h1[^>]*>([^<]+)</h1>', html)
+    if m:
+        raw = m.group(1).strip()
+        # Build the code that javhoo uses in the H1 (may differ from our bango key)
+        url_code = _javhoo_url(bango).rsplit('/', 1)[-1]   # last path segment
+        for prefix in (bango, url_code):
+            raw = re.sub(r'^' + re.escape(prefix) + r'[\s　]+', '', raw, flags=re.IGNORECASE)
+        title = raw.strip().strip('「」').strip()
+
+    # Actresses: links to /ja/star/{url-encoded-name}
+    actresses = list(dict.fromkeys(
+        re.findall(r'href="https://www\.javhoo\.com/ja/star/[^"]+">([^<]+)</a>', html)
+    ))
+
+    return {'cover': cover, 'title': title, 'actresses': actresses}
+
+
+def _avsox_search_term(bango: str) -> str:
+    """Convert an internal bango to the raw code avsox.click uses in searches."""
+    # 1PONDO-MMDDYY-NNN  →  MMDDYY_NNN
+    m = re.match(r'^1PONDO-(\d{6})-(\d{3,4})$', bango, re.I)
+    if m:
+        return f"{m.group(1)}_{m.group(2)}"
+    # CARIBBEANCOM-MMDDYY-NNN  →  MMDDYY-NNN
+    m = re.match(r'^CARIBBEANCOM-(\d{6})-(\d{3,4})$', bango, re.I)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    # CARIBPR-MMDDYY-NNN  →  MMDDYY-NNN
+    m = re.match(r'^CARIBPR-(\d{6})-(\d{3,4})$', bango, re.I)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    # All others (HEYZO-3851, FC2-PPV-..., etc.) — use as-is
+    return bango
+
+
+def _fetch_one_meta_avsox(bango: str) -> dict:
+    """Search avsox.click for a bango and scrape the movie page.
+    Two HTTP requests: search page → movie page.
+    Returns {} on not-found, {'_err': msg} on network error."""
+    term = _avsox_search_term(bango)
+    search_url = f"https://avsox.click/ja/search/{urllib.parse.quote(term, safe='')}"
+    headers = {
+        'User-Agent':      _META_UA,
+        'Accept-Language': 'ja,zh-TW;q=0.9,zh;q=0.8,en;q=0.7',
+        'Referer':         'https://avsox.click/',
+    }
+
+    # ── Step 1: search ────────────────────────────────────────────────
+    try:
+        req = urllib.request.Request(search_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=12) as r:
+            html = r.read().decode('utf-8', errors='replace')
+    except Exception as exc:
+        return {'_err': f"avsox search {exc}"}
+
+    # Find movie links; prefer the one whose card text contains the search term
+    pattern = re.compile(
+        r'href="((?:https?:)?//avsox\.click/ja/movie/[a-f0-9]+)"[^>]*>(.*?)</a>',
+        re.DOTALL | re.IGNORECASE,
+    )
+    movie_url = None
+    for href, card_text in pattern.findall(html):
+        if term.lower() in card_text.lower() or bango.lower() in card_text.lower():
+            movie_url = href
+            break
+    if not movie_url:
+        # Fallback: any movie link (first one)
+        m = re.search(r'href="((?:https?:)?//avsox\.click/ja/movie/[a-f0-9]+)"', html)
+        if not m:
+            return {}   # no results
+        movie_url = m.group(1)
+
+    if movie_url.startswith('//'):
+        movie_url = 'https:' + movie_url
+
+    # ── Step 2: movie page ────────────────────────────────────────────
+    try:
+        req2 = urllib.request.Request(movie_url, headers=headers)
+        with urllib.request.urlopen(req2, timeout=12) as r2:
+            html2 = r2.read().decode('utf-8', errors='replace')
+    except Exception as exc:
+        return {'_err': f"avsox movie {exc}"}
+
+    # Cover: player_thumbnail.jpg (best available on avsox)
+    cover = ''
+    m = re.search(r'src="(https?://[^"]+player_thumbnail\.jpg)"', html2)
+    if m:
+        cover = m.group(1)
+    if not cover:  # 1pondo uses str.jpg (sample strip)
+        m = re.search(r'src="(https?://[^"]+str\.jpg)"', html2)
+        if m:
+            cover = m.group(1)
+
+    # Title: <h3>BANGO actress title - 無修正アダルト動画 STUDIO</h3>
+    title = ''
+    m = re.search(r'<h3>([^<]+)</h3>', html2)
+    if m:
+        raw = m.group(1).strip()
+        # Strip bango / raw code prefix
+        for prefix in (bango, term):
+            raw = re.sub(r'^' + re.escape(prefix) + r'\s*', '', raw, flags=re.IGNORECASE)
+        # Strip site suffix " - 無修正アダルト動画 ..."
+        raw = re.sub(r'\s*-\s*無修正アダルト動画.*$', '', raw)
+        # Strip actress name in 【...】 reading brackets (they repeat in actresses list)
+        raw = re.sub(r'【[^】]*】', '', raw)
+        title = raw.strip()
+
+    # Actresses: //avsox.click/ja/star/{hash}
+    actresses = list(dict.fromkeys(
+        re.findall(
+            r'href="(?:https?:)?//avsox\.click/ja/star/[a-f0-9]+"[^>]*>([^<]+)</a>',
+            html2,
+        )
+    ))
+
+    return {'cover': cover, 'title': title, 'actresses': actresses}
+
+
+def _fetch_one_meta_uncensored(bango: str) -> dict:
+    """Uncensored path: javhoo.com first, avsox.click as fallback."""
+    meta = _fetch_one_meta_javhoo(bango)
+    if meta and not meta.get('_err') and (meta.get('cover') or meta.get('title')):
+        meta['_src'] = 'javhoo'
+        return meta
+    avsox = _fetch_one_meta_avsox(bango)
+    if avsox and not avsox.get('_err'):
+        avsox['_src'] = 'avsox'
+    return avsox
+
+
+def _fetch_one_meta_censored(bango: str) -> dict:
+    """Censored path: jav321.com first, javhoo.com as fallback.
+    javhoo covers series not indexed by jav321 (e.g. NHDTB, some newer releases).
+
+    Note: jav321's POST-search fallback returns {'_err': ...} (not {}) when the
+    search itself 404s — so we treat any non-success from jav321 as a miss and
+    always give javhoo a chance."""
+    meta = _fetch_one_meta(bango)
+    if meta.get('cover') or meta.get('title'):
+        meta['_src'] = 'jav321'
+        return meta
+    # jav321 returned empty or errored (not found / search miss) → try javhoo
+    javhoo = _fetch_one_meta_javhoo(bango)
+    if javhoo.get('cover') or javhoo.get('title'):
+        javhoo['_src'] = 'javhoo'
+        return javhoo
+    if javhoo.get('_err'):
+        javhoo['_src'] = 'javhoo'
+        return javhoo
+    # Neither source found it; surface jav321's original response (may have _err)
+    meta.setdefault('_src', 'jav321')
+    return meta
+
+
 def load_meta_cache() -> dict:
+    """Load meta_cache.json.
+
+    The cache is keyed by bango string (e.g. "MIDE-332"), NOT by file path.
+    This means cached metadata is preserved even when you change ROOT_DIRS:
+    removing a directory only hides its items from the current scan; adding
+    it back restores them from cache with no re-fetch needed.
+
+    Also recovers from an interrupted previous save: if a leftover .tmp file
+    exists and is valid JSON, it means os.replace() was interrupted — we
+    complete the rename so no data is lost.
+    """
     here = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(here, META_CACHE_FILE)
+    tmp  = path + '.tmp'
+
+    # Recover from an interrupted atomic save (tmp written, rename not done yet)
+    if os.path.exists(tmp):
+        try:
+            with open(tmp, 'r', encoding='utf-8') as f:
+                recovered = json.load(f)
+            os.replace(tmp, path)   # complete the interrupted rename
+            return recovered
+        except (json.JSONDecodeError, OSError):
+            try:
+                os.remove(tmp)      # corrupt temp — discard it
+            except OSError:
+                pass
+
     try:
         with open(path, 'r', encoding='utf-8') as f:
             return json.load(f)
@@ -530,8 +850,36 @@ def load_meta_cache() -> dict:
         return {}
 
 
+def save_meta_cache(cache: dict) -> None:
+    """Write meta_cache.json atomically (write to .tmp, then rename).
+
+    A direct open('w') truncates the file before writing, so a crash or
+    disk-full mid-write would destroy the entire cache.  Writing to a temp
+    file and renaming means the original is only replaced once the new data
+    is fully on disk — a crash at any point leaves the cache intact.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(here, META_CACHE_FILE)
+    tmp  = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)   # atomic on POSIX; best-effort on Windows
+
+
+# Studios whose content is always uncensored — route to javhoo→avsox path.
+# classify.py marks all is_jav items as 'jav' (not 'uncensored'), so we
+# identify these by series prefix rather than by classify_cache.json.
+_UNCENSORED_JAV_SERIES = frozenset({
+    '1PONDO', 'CARIBBEANCOM', 'CARIBPR', 'HEYZO', '1000GIRI',
+    'GACHI', 'GACHIP', 'GACHIG',   # Gachinco (g-area)
+})
+
+
 def _load_uncensored_paths() -> set:
     """Return the set of folder paths classified as 'uncensored' by classify.py.
+    This covers non-JAV folders (tokyo-hot, h0930, …) detected by classify rules.
+    JAV-coded items from known uncensored studios are handled separately via
+    _UNCENSORED_JAV_SERIES so classify.py's 'jav' auto-label doesn't hide them.
     Returns an empty set if classify_cache.json doesn't exist yet."""
     here = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(here, CLASSIFY_CACHE_FILE)
@@ -551,25 +899,38 @@ def save_meta_cache(cache: dict) -> None:
 
 
 def enrich_with_meta(items: list, cache: dict, all_meta: bool = False) -> int:
-    """Fetch missing metadata from jav321.com (up to META_PER_RUN items, or all if all_meta=True).
-    Skips items classified as 'uncensored' — jav321.com only covers censored JAV.
+    """Fetch missing metadata (up to META_PER_RUN items per run, or all if all_meta=True).
+    • Censored JAV  →  jav321.com → javhoo.com (fallback)
+    • Uncensored JAV →  javhoo.com → avsox.click (fallback)
     Saves cache after every successful fetch. Handles Ctrl+C gracefully.
     Returns number of newly fetched items."""
     uncensored = _load_uncensored_paths()
-    if uncensored:
-        print(f"  Skipping {len(uncensored)} uncensored items (jav321 only covers censored JAV).")
 
-    need_fetch = [e for e in items if e.get('is_jav') and e.get('bango')
-                  and e['bango'] not in cache
-                  and e.get('path') not in uncensored]
+    def _needs_fetch(e):
+        return e.get('is_jav') and e.get('bango') and e['bango'] not in cache
+
+    need_fetch = [e for e in items if _needs_fetch(e)]
     ok = fail = 0
     total_needed = len(need_fetch)
     limit        = total_needed if all_meta else min(total_needed, META_PER_RUN)
 
+    def _is_uncensored(e: dict) -> bool:
+        """True when this item should use the uncensored fetch path (javhoo→avsox).
+        Covers: classify_cache 'uncensored' folder + known uncensored JAV series."""
+        if e.get('path') in uncensored:
+            return True
+        return e.get('series') in _UNCENSORED_JAV_SERIES
+
+    n_uncensored = sum(1 for e in need_fetch if _is_uncensored(e))
+    n_censored   = total_needed - n_uncensored
+
     if total_needed:
         remaining = total_needed - limit
-        print(f"  Fetching metadata from jav321.com: {limit} new items"
-              + (f" ({remaining} more on next run)" if remaining else "") + " ...")
+        parts = []
+        if n_censored:   parts.append(f"{n_censored} censored (jav321→javhoo)")
+        if n_uncensored: parts.append(f"{n_uncensored} uncensored (javhoo→avsox)")
+        print(f"  Fetching metadata: {', '.join(parts)}"
+              + (f"  [{remaining} more on next run]" if remaining else "") + " ...")
         print("  Press Ctrl+C to stop early (progress is saved).")
     else:
         cached = sum(1 for e in items if e.get('is_jav') and e.get('bango') and e['bango'] in cache)
@@ -580,14 +941,16 @@ def enrich_with_meta(items: list, cache: dict, all_meta: bool = False) -> int:
             if ok + fail >= limit:
                 break
             bango = entry['bango']
-            meta  = _fetch_one_meta(bango)
-            n     = ok + fail + 1
+            is_unc = _is_uncensored(entry)
+            meta   = _fetch_one_meta_uncensored(bango) if is_unc else _fetch_one_meta_censored(bango)
+            n      = ok + fail + 1
+            src    = meta.pop('_src', 'javhoo' if is_unc else 'jav321')
 
             if meta.get('cover') or meta.get('title'):
                 cache[bango] = meta
                 save_meta_cache(cache)   # persist after every success
                 ok += 1
-                status = '✓'
+                status = f'✓ [{src}]'
                 if meta.get('cover'):
                     status += ' cover'
                 if meta.get('actresses'):
@@ -596,13 +959,13 @@ def enrich_with_meta(items: list, cache: dict, all_meta: bool = False) -> int:
                 fail += 1
                 status = f"✗ ({meta['_err'][:60]})"
             else:
-                # Not found on jav321 — cache the miss so we don't retry forever
+                # Not found — cache the miss so we don't retry forever
                 cache[bango] = {}
                 save_meta_cache(cache)
                 fail += 1
-                status = '– (not on jav321)'
+                status = f'– (not on {src})'
 
-            print(f"  [{n}/{limit}] {status}  {bango}")
+            print(f"  [{n}/{limit}] {status}  {bango}", flush=True)
             if n < limit:
                 time.sleep(META_DELAY)
 
@@ -702,14 +1065,36 @@ def main(skip_meta: bool = False, all_meta: bool = False):
 
 
 def test_meta_bango(bango: str) -> None:
-    """Fetch and print metadata for a single bango from jav321.com."""
-    print(f"Fetching metadata for: {bango}  (jav321 ID: {_jav321_id(bango)})")
-    meta = _fetch_one_meta(bango)
-    if meta.get('_err'):
-        print(f"  Error   : {meta['_err']}")
-    elif not meta:
-        print("  Not found on jav321.com")
+    """Fetch and print metadata for a single bango.
+
+    Routing mirrors enrich_with_meta:
+      • Known uncensored studios (1PONDO, CARIB, HEYZO, FC2-PPV, …)
+        → javhoo.com first, avsox.click fallback
+      • All other bangos (MIDE, STARS, NHDTB, …)
+        → jav321.com first, javhoo.com fallback
+    """
+    series = extract_bango(bango)[1] or ''
+    is_unc_studio = series in _UNCENSORED_JAV_SERIES
+
+    if is_unc_studio:
+        print(f"Fetching metadata for: {bango}  (uncensored path: javhoo → avsox)")
+        print(f"  javhoo URL : {_javhoo_url(bango)}")
+        print(f"  avsox term : {_avsox_search_term(bango)}")
+        meta = _fetch_one_meta_uncensored(bango)
+        src  = meta.pop('_src', 'javhoo')
     else:
+        print(f"Fetching metadata for: {bango}  (censored path: jav321 → javhoo)")
+        print(f"  jav321 ID  : {_jav321_id(bango)}")
+        print(f"  javhoo URL : {_javhoo_url(bango)}")
+        meta = _fetch_one_meta_censored(bango)
+        src  = meta.pop('_src', 'jav321')
+
+    if meta.get('_err'):
+        print(f"  Error    : {meta['_err']}")
+    elif not (meta.get('cover') or meta.get('title')):
+        print(f"  Not found (tried {src})")
+    else:
+        print(f"  Source   : {src}")
         print(f"  Title    : {meta.get('title', '(none)')}")
         print(f"  Cover    : {meta.get('cover', '(none)')}")
         print(f"  Actresses: {meta.get('actresses', [])}")

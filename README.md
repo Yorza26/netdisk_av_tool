@@ -1,10 +1,11 @@
 # JAV Collection Manager
 
 Browse, manage, and classify your local JAV collection through a local web UI.  
-Reads file data from **Everything**, fetches cover images · titles · actresses from **jav321.com** (no login needed).  
+Reads file data from **Everything**, fetches covers · titles · actresses from **jav321.com** and **javhoo.com**.  
 Optional AI genre classification via a local **Ollama** model.
 
-**No server needed.** Run the scanner once, then open `index.html` directly in your browser.
+**PC use:** open `index.html` directly — no server needed.  
+**iOS / LAN use:** run `serve.bat` (or `python serve.py`) and browse to the printed URL on your phone.
 
 ---
 
@@ -14,7 +15,7 @@ Optional AI genre classification via a local **Ollama** model.
 |---|---|
 | [Everything](https://www.voidtools.com/) | Must be running with HTTP server enabled |
 | Python 3.8+ | Standard library only — **no `pip install` needed** |
-| Internet access | For metadata fetch (jav321.com + pics.dmm.co.jp) |
+| Internet access | For metadata fetch (jav321.com · javhoo.com · avsox.click) |
 | [Ollama](https://ollama.com/) + `gemma4:e4b` | **Optional** — only needed for `classify.py` |
 
 ---
@@ -29,15 +30,21 @@ Optional AI genre classification via a local **Ollama** model.
 4. Click OK
 
 > If port 80 is taken, change it to e.g. `8080` and update  
-> `EVERYTHING_PORT = 80` at the top of `scan.py`.
+> `EVERYTHING_PORT = 80` at the top of `scan.py` **and** pass the port to `serve.py`:  
+> `python serve.py 8080 8080`
 
-### 2 — Set your collection root
+### 2 — Set your collection roots
 
 Edit the top of `scan.py`:
 
 ```python
-ROOT_DIR = r"E:\115\云下载"   # ← change to your actual folder
+ROOT_DIRS = [
+    r"E:\115\云下载",
+    r"E:\115\!NSFW\4k",   # add as many folders as you like
+]
 ```
+
+You can add or remove directories any time — cached metadata is indexed by bango code, not by path, so it survives the change.
 
 ---
 
@@ -49,12 +56,13 @@ ROOT_DIR = r"E:\115\云下载"   # ← change to your actual folder
 python scan.py
 ```
 
-Scans your collection, writes `data.js`, then fetches up to **100 missing covers** from jav321.com.  
-Each run adds another 100 until everything is covered.
+Scans your collection, writes `data.js`, then fetches up to **50 missing covers** per run.  
+Each run adds another 50 until everything is covered.
 
 **Step 2 — open the UI:**
 
-Double-click `index.html` (or drag it into your browser).
+- **PC:** double-click `index.html` (or drag it into your browser)
+- **iOS / other devices:** double-click `serve.bat`, then browse to the URL shown in the terminal
 
 ---
 
@@ -62,15 +70,45 @@ Double-click `index.html` (or drag it into your browser).
 
 | Command | What it does |
 |---|---|
-| `python scan.py` | Scan + fetch up to 100 new covers |
+| `python scan.py` | Scan + fetch up to 50 new covers |
 | `python scan.py --all-meta` | Scan + fetch **all** missing covers in one go |
 | `python scan.py --skip-meta` | Scan only — no network calls, fastest |
 | `python scan.py --test-bango MIDE-332` | Test metadata fetch for a single bango |
 
 > **Tip:** Run `--all-meta` once on a large collection, then use plain `scan.py` for day-to-day updates.  
 > Ctrl+C at any time — progress is saved to `meta_cache.json` and resumes on the next run.
->
-> Uncensored items (detected via `classify_cache.json`) are automatically skipped during metadata fetch — jav321.com only covers censored JAV.
+
+---
+
+## iOS / LAN access
+
+`serve.py` starts a tiny HTTP server so the viewer works from any device on the same Wi-Fi:
+
+```
+python serve.py              # viewer on :8080, Everything on :80
+python serve.py 9000         # viewer on :9000
+python serve.py 8080 8080    # viewer on :8080, Everything on :8080
+```
+
+Or just double-click **`serve.bat`**.
+
+The terminal prints two URLs — one for the PC, one for your phone.  
+File and folder links in the detail panel open via Everything's HTTP server, so you can stream video directly in Safari.
+
+---
+
+## How metadata works
+
+Covers, titles, and actress names are fetched and embedded directly into `data.js`.
+
+| Item type | Primary source | Fallback |
+|---|---|---|
+| Censored JAV | jav321.com | javhoo.com |
+| Uncensored JAV (1PONDO, HEYZO, CARIB, Gachinco…) | javhoo.com | avsox.click |
+
+- Results are cached in `meta_cache.json` — each bango is fetched only once
+- The cache is keyed by bango code, not by path — safe to add/remove `ROOT_DIRS` entries
+- Items not found on any source show the folder name; no cover is shown
 
 ---
 
@@ -97,18 +135,7 @@ python classify.py --all            # ignore cache, reclassify everything
 ```
 
 Results are saved to `classify_cache.json` and exported to `classify_data.js` for the browser.  
-The **Classifier** tab in `index.html` shows all items with their genre, category filter pills, and stats. Items can be selected, marked for deletion, and opened in the detail panel — same as Browse.
-
----
-
-## How metadata works
-
-Covers, titles, and actress names are fetched from **jav321.com** and embedded directly into `data.js`.  
-Images are served from **pics.dmm.co.jp** — publicly accessible, no login required.
-
-- Results are cached in `meta_cache.json` — each bango is only fetched once
-- Items not found on jav321 show the folder name instead; no cover is shown
-- Uncensored items are skipped automatically during fetch (not indexed by jav321)
+The **Classifier** tab shows all items with their genre, category filter pills, and stats. Items can be selected, marked for deletion, and opened in the detail panel — same as Browse.
 
 ---
 
@@ -117,10 +144,10 @@ Images are served from **pics.dmm.co.jp** — publicly accessible, no login requ
 | View | What it shows |
 |---|---|
 | **Dashboard** | Total size · item counts · top-20 series by count and by GB |
-| **Browse** | All directories sorted by size; each card shows cover · title · actresses |
+| **Browse** | All directories sorted by size; each card shows cover · title · actresses · lazy-loaded |
 | **Statistics** | Full series table, sortable by count or size; click a row → browse that series |
 | **Actresses** | All actresses ranked by item count / size; click a name → browse her items |
-| **Classifier** | Items grouped by genre; category filter pills · stats bar · select/mark/detail |
+| **Classifier** | Items grouped by genre; category filter pills · stats bar · select/mark/detail · lazy-loaded |
 | **Non-JAV** | Directories where no bango could be detected |
 
 **Mark for deletion** → marks items with a red border.  
@@ -141,6 +168,7 @@ Images are served from **pics.dmm.co.jp** — publicly accessible, no login requ
 | Numeric prefix | `300MAAN-456`, `200GANA-123`, `230ORECO-171` |
 | 1Pondo / Caribbean | `1PONDO-101015-001`, `102720-001-carib`, `(1pondo)(062414_832)` |
 | 1000Giri | `(1000人斬り)(150610yume)` |
+| Gachinco | `GACHI-0001`, `GACHI_0001`, `GACHIG-001`, `GACHIP-001` |
 | Distributor-tagged | `第一会所新片@SIS001@(Heyzo)(0435)…` → extracts real bango, ignores `@SIS001@` |
 | Site-prefixed | `[Thz.la] MIDE-332`, `hhd800.com@MIDE-332` |
 
@@ -150,12 +178,14 @@ Images are served from **pics.dmm.co.jp** — publicly accessible, no login requ
 
 ```
 jav_tool/
-├── index.html          ← open this in your browser (Manager + Classifier)
+├── index.html          ← open this in your browser
 ├── style.css
 ├── app.js
 ├── chart.js
-├── scan.py             ← generates data.js
-├── classify.py         ← generates classify_data.js  (optional)
+├── scan.py             ← scan + metadata fetch → writes data.js
+├── classify.py         ← genre classifier     → writes classify_data.js  (optional)
+├── serve.py            ← LAN HTTP server for iOS access
+├── serve.bat           ← double-click to start serve.py on Windows
 ├── data.js             ← generated by scan.py        (gitignored)
 ├── meta_cache.json     ← cover/title/actress cache   (gitignored)
 ├── classify_cache.json ← genre classification cache  (gitignored)
@@ -168,12 +198,13 @@ jav_tool/
 
 | Problem | Fix |
 |---|---|
-| Page shows "data.js not found" | Run `python scan.py` first |
-| "Cannot reach Everything" | Enable HTTP Server in Everything (see setup above) |
+| Page shows "Could not load data.js" | Run `python scan.py` first |
 | No covers showing | Run `python scan.py` (or `--all-meta`) with internet access |
-| Cover loads then breaks | DMM image CDN is occasionally slow — reload the page |
+| Cover loads then disappears | Image host hotlink protection — usually resolves on reload |
 | Bango not detected | Check the Non-JAV view; rename the folder to include the bango |
-| Wrong bango | Rename the folder, delete the entry from `meta_cache.json`, re-run |
+| Wrong bango | Rename the folder, delete its entry from `meta_cache.json`, re-run |
 | After adding new files | Re-run `python scan.py` and reload the page (F5) |
 | Classifier tab shows "No classification data" | Run `python classify.py --rules-only` (no Ollama needed) |
 | Ollama errors in classify.py | Make sure `ollama serve` is running and `gemma4:e4b` is pulled |
+| File links don't open on iOS | Make sure Everything's HTTP server is on and you opened the page via `serve.bat` |
+| iOS shows wrong IP in file links | Restart `serve.bat` (it re-detects your LAN IP on startup) |

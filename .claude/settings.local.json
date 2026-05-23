@@ -20,7 +20,12 @@
       "Bash(python3 -c ' *)",
       "Bash(python3 *)",
       "Bash(Remove-Item \"D:\\\\Playground\\\\jav_tool\\\\classify.html\" -ErrorAction Stop)",
-      "PowerShell(Remove-Item *)"
+      "PowerShell(Remove-Item *)",
+      "WebFetch(domain:avsox.click)",
+      "WebFetch(domain:www.javhoo.com)",
+      "PowerShell(python -c \"import py_compile; py_compile.compile\\(r'D:\\\\Playground\\\\jav_tool\\\\scan.py', doraise=True\\); print\\('OK'\\)\")",
+      "PowerShell(cd D:\\\\Playground\\\\jav_tool; Start-Process python -ArgumentList \"serve.py\" -PassThru | ForEach-Object { Start-Sleep 2; $_})",
+      "PowerShell(cd D:\\\\Playground\\\\jav_tool; \\(Get-Item data.js\\).Length / 1MB)"
     ]
   }
 }
