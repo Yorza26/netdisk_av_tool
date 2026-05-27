@@ -16,6 +16,8 @@ Usage:
 import urllib.request
 import urllib.parse
 import urllib.error
+import gzip as _gzip
+import zlib
 import json
 import re
 import os
@@ -45,7 +47,7 @@ ROOT_DIRS = [
     r"E:\115\云下载",
     r"E:\115\!NSFW\CenPack\H265",
     r"E:\115\!NSFW\4k",
-    r"E:\115\!NSFW\Anthology\Gachinco",
+    # r"E:\115\!NSFW\Anthology\Gachinco",
 ]
 OUTPUT_FILE     = "data.js"
 META_CACHE_FILE     = "meta_cache.json"
@@ -520,6 +522,33 @@ _META_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
             'Chrome/124.0.0.0 Safari/537.36')
 
 
+def _http_fetch(url: str, headers: dict, *,
+                data: bytes = None, timeout: int = 12):
+    """GET (or POST when data is given) with automatic gzip/deflate decompression.
+
+    Always sends Accept-Encoding: gzip, deflate so servers return compressed
+    bodies — typically 5-10x smaller than plain text, which cuts VPN data usage
+    significantly. urllib.request does NOT add this header by default.
+
+    Returns (html_str, final_url).  final_url is needed for POST redirects
+    (jav321 search → video page) to check whether we landed on a real result.
+    """
+    h = {**headers, 'Accept-Encoding': 'gzip, deflate'}
+    req = urllib.request.Request(url, headers=h, data=data)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        body      = r.read()
+        final_url = r.url
+        enc       = r.headers.get('Content-Encoding', '').lower()
+        if 'gzip' in enc:
+            body = _gzip.decompress(body)
+        elif 'deflate' in enc:
+            try:
+                body = zlib.decompress(body)
+            except zlib.error:
+                body = zlib.decompress(body, -zlib.MAX_WBITS)  # raw deflate
+    return body.decode('utf-8', errors='replace'), final_url
+
+
 def _jav321_id(bango: str) -> str:
     """Convert MIDE-332 → mide00332, DOCP-175 → docp00175 (jav321 URL format)."""
     m = re.match(r'^([A-Za-z]+)-?(\d+)', bango.strip())
@@ -541,24 +570,20 @@ def _fetch_one_meta(bango: str) -> dict:
 
     html = ''
     try:
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=12) as r:
-            html = r.read().decode('utf-8', errors='replace')
+        html, _ = _http_fetch(url, headers)
     except urllib.error.HTTPError as e:
         if e.code == 404:
             # Direct URL 404 — try POST search as fallback
             try:
-                req2 = urllib.request.Request(
-                    "https://www.jav321.com/search",
-                    data=urllib.parse.urlencode({'sn': bango}).encode(),
-                    headers={**headers,
-                             'Content-Type': 'application/x-www-form-urlencoded',
-                             'Referer':      'https://www.jav321.com/'},
-                )
-                with urllib.request.urlopen(req2, timeout=15) as r2:
-                    if '/video/' not in r2.url:
-                        return {}   # search didn't land on a video page
-                    html = r2.read().decode('utf-8', errors='replace')
+                post_data = urllib.parse.urlencode({'sn': bango}).encode()
+                post_headers = {**headers,
+                                'Content-Type': 'application/x-www-form-urlencoded',
+                                'Referer':      'https://www.jav321.com/'}
+                html, final_url = _http_fetch(
+                    "https://www.jav321.com/search", post_headers,
+                    data=post_data, timeout=15)
+                if '/video/' not in final_url:
+                    return {}   # search didn't land on a video page
             except Exception as e2:
                 return {'_err': str(e2)}
         else:
@@ -634,9 +659,7 @@ def _fetch_one_meta_javhoo(bango: str) -> dict:
         'Referer':         'https://www.javhoo.com/',
     }
     try:
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=12) as r:
-            html = r.read().decode('utf-8', errors='replace')
+        html, _ = _http_fetch(url, headers)
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return {}
@@ -669,10 +692,42 @@ def _fetch_one_meta_javhoo(bango: str) -> dict:
             raw = re.sub(r'^' + re.escape(prefix) + r'[\s　]+', '', raw, flags=re.IGNORECASE)
         title = raw.strip().strip('「」').strip()
 
-    # Actresses: links to /ja/star/{url-encoded-name}
-    actresses = list(dict.fromkeys(
-        re.findall(r'href="https://www\.javhoo\.com/ja/star/[^"]+">([^<]+)</a>', html)
-    ))
+    # Actresses — javhoo uses SINGLE-QUOTED href attributes (href='...') inside
+    # pods_widget_field divs.  All double-quote-only regexes fail silently.
+    # Strategy: match either quote style; search the specific <h3>演員</h3> field
+    # rather than the bare text "演員" (which also appears in search form placeholders).
+    actresses = []
+
+    # Pattern A: /ja/star/ links — either quote style
+    for _pat in (
+        r"""href=['"]https://www\.javhoo\.com/ja/star/[^'"]+?['"][^>]*>([^<]+)</a>""",
+        r"""href=['"]/ja/star/[^'"]+?['"][^>]*>([^<]+)</a>""",
+    ):
+        _found = list(dict.fromkeys(n.strip() for n in re.findall(_pat, html) if n.strip()))
+        if _found:
+            actresses = _found
+            break
+
+    # Pattern B: /tag/ links (WordPress-style slugs) — either quote style
+    if not actresses:
+        for _pat in (
+            r"""href=['"]https://www\.javhoo\.com/tag/[^'"]+?['"][^>]*>([^<]+)</a>""",
+            r"""href=['"]/tag/[^'"]+?['"][^>]*>([^<]+)</a>""",
+        ):
+            _found = list(dict.fromkeys(n.strip() for n in re.findall(_pat, html) if n.strip()))
+            if _found:
+                actresses = _found
+                break
+
+    # Pattern C: find <h3>演員</h3> label (the real movie-info field, not the
+    # search-form placeholder) and extract <a> link texts that follow it.
+    if not actresses:
+        _m = re.search(r'<h3>演[員员][^<]*</h3>(.*?)</div>', html, re.DOTALL | re.IGNORECASE)
+        if _m:
+            _candidates = re.findall(r'<a\b[^>]*>([^<]+)</a>', _m.group(1))
+            actresses = list(dict.fromkeys(
+                c.strip() for c in _candidates if c.strip() and len(c.strip()) <= 30
+            ))
 
     return {'cover': cover, 'title': title, 'actresses': actresses}
 
@@ -709,9 +764,7 @@ def _fetch_one_meta_avsox(bango: str) -> dict:
 
     # ── Step 1: search ────────────────────────────────────────────────
     try:
-        req = urllib.request.Request(search_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=12) as r:
-            html = r.read().decode('utf-8', errors='replace')
+        html, _ = _http_fetch(search_url, headers)
     except Exception as exc:
         return {'_err': f"avsox search {exc}"}
 
@@ -737,9 +790,7 @@ def _fetch_one_meta_avsox(bango: str) -> dict:
 
     # ── Step 2: movie page ────────────────────────────────────────────
     try:
-        req2 = urllib.request.Request(movie_url, headers=headers)
-        with urllib.request.urlopen(req2, timeout=12) as r2:
-            html2 = r2.read().decode('utf-8', errors='replace')
+        html2, _ = _http_fetch(movie_url, headers)
     except Exception as exc:
         return {'_err': f"avsox movie {exc}"}
 
@@ -791,27 +842,26 @@ def _fetch_one_meta_uncensored(bango: str) -> dict:
 
 
 def _fetch_one_meta_censored(bango: str) -> dict:
-    """Censored path: jav321.com first, javhoo.com as fallback.
-    javhoo covers series not indexed by jav321 (e.g. NHDTB, some newer releases).
+    """Censored path: javhoo.com first, jav321.com as fallback.
 
-    Note: jav321's POST-search fallback returns {'_err': ...} (not {}) when the
-    search itself 404s — so we treat any non-success from jav321 as a miss and
-    always give javhoo a chance."""
-    meta = _fetch_one_meta(bango)
-    if meta.get('cover') or meta.get('title'):
-        meta['_src'] = 'jav321'
-        return meta
-    # jav321 returned empty or errored (not found / search miss) → try javhoo
+    javhoo tends to have more complete actress data than jav321, so it is tried
+    first.  jav321 is used as a fallback when javhoo returns nothing (404 / not
+    in database yet)."""
     javhoo = _fetch_one_meta_javhoo(bango)
     if javhoo.get('cover') or javhoo.get('title'):
         javhoo['_src'] = 'javhoo'
         return javhoo
-    if javhoo.get('_err'):
-        javhoo['_src'] = 'javhoo'
-        return javhoo
-    # Neither source found it; surface jav321's original response (may have _err)
-    meta.setdefault('_src', 'jav321')
-    return meta
+    # javhoo returned empty or errored → try jav321
+    meta = _fetch_one_meta(bango)
+    if meta.get('cover') or meta.get('title'):
+        meta['_src'] = 'jav321'
+        return meta
+    if meta.get('_err'):
+        meta['_src'] = 'jav321'
+        return meta
+    # Neither found it; return javhoo's response (may be {} or have _err)
+    javhoo.setdefault('_src', 'javhoo')
+    return javhoo
 
 
 def load_meta_cache() -> dict:
@@ -891,16 +941,66 @@ def _load_uncensored_paths() -> set:
         return set()
 
 
-def save_meta_cache(cache: dict) -> None:
-    here = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(here, META_CACHE_FILE)
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(cache, f, ensure_ascii=False, indent=2)
+def fill_missing_actresses(items: list, cache: dict) -> int:
+    """Re-fetch via javhoo for cached JAV items that have a title but no actresses.
+
+    Run with:  python scan.py --fill-actresses
+
+    Some items were fetched from jav321 which had no actress data. This command
+    tries javhoo for those specific items and patches the cache in place.
+    Returns the number of entries updated."""
+    need = [
+        e for e in items
+        if e.get('is_jav') and e.get('bango')
+        and e['bango'] in cache
+        and cache[e['bango']].get('title')
+        and not cache[e['bango']].get('actresses')
+    ]
+
+    if not need:
+        print("  Nothing to do — all cached JAV items already have actress data.")
+        return 0
+
+    print(f"  Found {len(need)} items with title but no actresses — re-fetching via javhoo ...")
+    print("  Press Ctrl+C to stop early (progress is saved).")
+    updated = 0
+    try:
+        for n, entry in enumerate(need, 1):
+            bango = entry['bango']
+            meta  = _fetch_one_meta_javhoo(bango)
+            if meta.get('actresses'):
+                cache[bango]['actresses'] = meta['actresses']
+                # Also patch cover if we had none before
+                if meta.get('cover') and not cache[bango].get('cover'):
+                    cache[bango]['cover'] = meta['cover']
+                save_meta_cache(cache)
+                updated += 1
+                names  = meta['actresses']
+                shown  = ', '.join(names[:2]) + ('…' if len(names) > 2 else '')
+                status = f"✓  [{shown}]"
+            elif meta.get('_err'):
+                status = f"✗  ({meta['_err'][:60]})"
+            elif meta.get('title') or meta.get('cover'):
+                # Page found but no actress credits listed on javhoo
+                status = '–  (page found, no actress credit on javhoo)'
+            elif meta == {}:
+                # Genuine 404 — not in javhoo's database
+                status = '–  (not on javhoo)'
+            else:
+                status = '–  (no data)'
+            print(f"  [{n}/{len(need)}] {status}  {bango}", flush=True)
+            if n < len(need):
+                time.sleep(META_DELAY)
+    except KeyboardInterrupt:
+        print(f"\n  Interrupted — {updated} updated, cache saved.")
+
+    print(f"  Done: {updated}/{len(need)} entries updated.")
+    return updated
 
 
 def enrich_with_meta(items: list, cache: dict, all_meta: bool = False) -> int:
     """Fetch missing metadata (up to META_PER_RUN items per run, or all if all_meta=True).
-    • Censored JAV  →  jav321.com → javhoo.com (fallback)
+    • Censored JAV  →  javhoo.com → jav321.com (fallback)
     • Uncensored JAV →  javhoo.com → avsox.click (fallback)
     Saves cache after every successful fetch. Handles Ctrl+C gracefully.
     Returns number of newly fetched items."""
@@ -927,7 +1027,7 @@ def enrich_with_meta(items: list, cache: dict, all_meta: bool = False) -> int:
     if total_needed:
         remaining = total_needed - limit
         parts = []
-        if n_censored:   parts.append(f"{n_censored} censored (jav321→javhoo)")
+        if n_censored:   parts.append(f"{n_censored} censored (javhoo→jav321)")
         if n_uncensored: parts.append(f"{n_uncensored} uncensored (javhoo→avsox)")
         print(f"  Fetching metadata: {', '.join(parts)}"
               + (f"  [{remaining} more on next run]" if remaining else "") + " ...")
@@ -1083,11 +1183,11 @@ def test_meta_bango(bango: str) -> None:
         meta = _fetch_one_meta_uncensored(bango)
         src  = meta.pop('_src', 'javhoo')
     else:
-        print(f"Fetching metadata for: {bango}  (censored path: jav321 → javhoo)")
-        print(f"  jav321 ID  : {_jav321_id(bango)}")
+        print(f"Fetching metadata for: {bango}  (censored path: javhoo → jav321)")
         print(f"  javhoo URL : {_javhoo_url(bango)}")
+        print(f"  jav321 ID  : {_jav321_id(bango)}")
         meta = _fetch_one_meta_censored(bango)
-        src  = meta.pop('_src', 'jav321')
+        src  = meta.pop('_src', 'javhoo')
 
     if meta.get('_err'):
         print(f"  Error    : {meta['_err']}")
@@ -1102,17 +1202,79 @@ def test_meta_bango(bango: str) -> None:
 
 if __name__ == '__main__':
     args = sys.argv[1:]
-    if len(args) == 2 and args[0] in ('--test-meta', '--test-bango'):
+    if len(args) == 2 and args[0] == '--debug-javhoo':
+        # Fetch raw HTML from javhoo and show the star/cover snippets so you
+        # can verify the regexes match.  Useful when actress data is missing.
+        bango = args[1]
+        url   = _javhoo_url(bango)
+        print(f"URL: {url}")
+        headers = {'User-Agent': _META_UA, 'Accept-Language': 'ja,zh-TW;q=0.9'}
+        try:
+            html, _ = _http_fetch(url, headers)
+        except Exception as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+        print(f"Page size: {len(html)} bytes")
+        # Show lines that look like actress/star/tag links
+        for label, kw in (('star href lines', 'star'), ('tag href lines', '/tag/')):
+            lines = [ln.strip() for ln in html.splitlines() if kw in ln and 'href' in ln]
+            print(f"\n--- {label} ({len(lines)}) ---")
+            for ln in lines[:20]:
+                print(' ', ln[:300])
+        # Show the <h3>演員</h3> field section specifically
+        m_act = re.search(r'<h3>演[員员][^<]*</h3>(.*?)</div>', html, re.DOTALL | re.IGNORECASE)
+        if m_act:
+            print(f"\n--- <h3>演員</h3> field ---")
+            print(m_act.group(0)[:500])
+        else:
+            # Fallback: first occurrence of 演員 in HTML (may be search form)
+            m_act2 = re.search(r'演[員员]', html)
+            if m_act2:
+                print(f"\n--- 演員 context (no <h3> found, raw context) ---")
+                print(html[m_act2.start() : m_act2.start() + 300])
+        # Show parsed result
+        print("\n--- parsed result ---")
+        result = _fetch_one_meta_javhoo(bango)
+        for k, v in result.items():
+            print(f"  {k}: {v}")
+    elif len(args) == 2 and args[0] in ('--test-meta', '--test-bango'):
         test_meta_bango(args[1])
     elif args == ['--skip-meta']:
         main(skip_meta=True)
     elif args == ['--all-meta']:
         main(all_meta=True)
+    elif args == ['--fill-actresses']:
+        # Re-fetch actress data from javhoo for cached items that have a title
+        # but empty actresses list (happens when jav321 had no actress info).
+        # Rewrites data.js with the patched cache applied.
+        print("Scanning collection ...")
+        cache  = load_meta_cache()
+        search = ' | '.join(f'path:"{d}"' for d in ROOT_DIRS)
+        raw    = fetch_everything(search)
+        if not raw:
+            print("No results from Everything — cannot determine item list.")
+            sys.exit(1)
+        data = process_results(raw, ROOT_DIRS)
+        print()
+        updated = fill_missing_actresses(data['items'], cache)
+        if updated:
+            # Re-apply full cache to items so data.js reflects the patches
+            for entry in data['items']:
+                bango = entry.get('bango')
+                if bango and bango in cache:
+                    m = cache[bango]
+                    entry['cover']     = m.get('cover', '')
+                    entry['title']     = m.get('title', '')
+                    entry['actresses'] = m.get('actresses', [])
+            _write_data_js(data)
+            print(f"  {OUTPUT_FILE} updated.")
     elif not args:
         main()
     else:
         print("Usage:")
-        print("  python scan.py                          # full scan + metadata (100 per run)")
+        print("  python scan.py                          # full scan + metadata (50 per run)")
         print("  python scan.py --all-meta               # full scan + fetch ALL missing metadata")
         print("  python scan.py --skip-meta              # fast scan, no metadata")
-        print("  python scan.py --test-bango <BANGO>     # test jav321 fetch for one bango")
+        print("  python scan.py --fill-actresses         # patch missing actress data via javhoo")
+        print("  python scan.py --test-bango <BANGO>     # test metadata fetch for one bango")
+        print("  python scan.py --debug-javhoo <BANGO>   # dump raw javhoo HTML snippets for regex diagnosis")

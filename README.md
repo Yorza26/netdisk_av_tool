@@ -73,6 +73,7 @@ Each run adds another 50 until everything is covered.
 | `python scan.py` | Scan + fetch up to 50 new covers |
 | `python scan.py --all-meta` | Scan + fetch **all** missing covers in one go |
 | `python scan.py --skip-meta` | Scan only — no network calls, fastest |
+| `python scan.py --fill-actresses` | Patch actress data for items with a title but no actress (re-fetches via javhoo) |
 | `python scan.py --test-bango MIDE-332` | Test metadata fetch for a single bango |
 
 > **Tip:** Run `--all-meta` once on a large collection, then use plain `scan.py` for day-to-day updates.  
@@ -103,7 +104,7 @@ Covers, titles, and actress names are fetched and embedded directly into `data.j
 
 | Item type | Primary source | Fallback |
 |---|---|---|
-| Censored JAV | jav321.com | javhoo.com |
+| Censored JAV | javhoo.com | jav321.com |
 | Uncensored JAV (1PONDO, HEYZO, CARIB, Gachinco…) | javhoo.com | avsox.click |
 
 - Results are cached in `meta_cache.json` — each bango is fetched only once
