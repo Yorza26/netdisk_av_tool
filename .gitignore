@@ -2,7 +2,3 @@ __pycache__/
 *.pyc
 *.pyo
 server_test*.txt
-data.js
-meta_cache.json
-classify_cache.json
-classify_data.js
