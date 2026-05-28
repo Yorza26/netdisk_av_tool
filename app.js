@@ -61,6 +61,10 @@ const CL_CYCLE = ['jav','uncensored','hentai','amateur','western','anime','gravu
 document.addEventListener('DOMContentLoaded', init);
 
 function init() {
+  if (localStorage.getItem('sidebarCollapsed') === '1') {
+    document.getElementById('sidebar').classList.add('collapsed');
+  }
+
   if (window.__javData__) {
     appData = window.__javData__;
     onDataReady();
@@ -73,6 +77,12 @@ function init() {
 
 function reloadData() {
   window.location.reload();
+}
+
+function toggleSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  const isNowCollapsed = sidebar.classList.toggle('collapsed');
+  localStorage.setItem('sidebarCollapsed', isNowCollapsed ? '1' : '0');
 }
 
 function onDataReady() {
