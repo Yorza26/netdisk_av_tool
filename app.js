@@ -644,7 +644,7 @@ function renderDetailShell(item) {
       <a class="path-link" href="${localUrl(item.path)}" target="_blank" title="Open folder">📁 ${esc(item.name)}</a>
       &nbsp;·&nbsp; ${item.total_size_human} &nbsp;·&nbsp; ${item.file_count} file(s)
     </div>
-    <div id="detail-files">${renderFileList(item.path, item.files)}</div>
+    <div id="detail-files">${renderFileList(item.path, item.files, item.is_file_item)}</div>
     ${item.file_count > item.files.length
       ? `<div style="font-size:12px;color:var(--text-muted);margin-top:6px;">
            … and ${item.file_count - item.files.length} more in subfolders
@@ -663,13 +663,34 @@ function renderDetailShell(item) {
   `;
 }
 
-function renderFileList(folderPath, files) {
+function openInPotPlayer(path) {
+  // Build the CloudDrive2 streaming URL the same way the CE115 userscript does.
+  // Strip the drive letter, encode the full cloud path (including / → %2F),
+  // then hand it to PotPlayer as an HTTP stream — no local path encoding issues.
+  const cloudPath = '/' + path.replace(/^[A-Za-z]:\\/, '').replace(/\\/g, '/');
+  const cdUrl = `http://localhost:19798/static/http/localhost:19798/False/${encodeURIComponent(cloudPath)}?check_expire=True`;
+  window.location.href = 'potplayer://' + cdUrl;
+}
+
+const _VIDEO_EXTS = new Set(['.mp4','.mkv','.avi','.wmv','.mov','.m4v','.ts','.m2ts','.iso','.rmvb','.flv','.webm']);
+
+function renderFileList(folderPath, files, isFileItem) {
   if (!files?.length) return '<div class="muted">No files listed</div>';
   return files.map(f => {
-    const url = localUrl(folderPath + '\\' + f.name);
+    // isFileItem: item.path is the file itself (flat-pack or root-dir direct file).
+    // In that case folderPath already IS the full file path; do not append the name.
+    // For normal folder items, construct the full path by joining folder + filename.
+    const filePath = isFileItem ? folderPath : folderPath + '\\' + f.name;
+    const url = localUrl(filePath);
+    const ppBtn = _VIDEO_EXTS.has(f.ext)
+      ? `<a class="potplayer-btn" href="#"
+           onclick="event.preventDefault();openInPotPlayer(this.dataset.path)"
+           data-path="${esc(filePath)}">▶ PotPlayer</a>`
+      : '';
     return `<div class="file-entry">
        <span>${fileIcon(f.ext)}</span>
        <a class="file-name path-link" href="${url}" target="_blank" title="${esc(f.name)}">${esc(f.name)}</a>
+       ${ppBtn}
        <span class="file-size">${f.size_human || ''}</span>
      </div>`;
   }).join('');

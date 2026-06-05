@@ -46,6 +46,9 @@ from collections import defaultdict
 ROOT_DIRS = [
     r"E:\115\云下载",
     r"E:\115\!NSFW\CenPack\H265",
+    r"E:\115\!NSFW\CenPack\総集編",
+    r"E:\115\!NSFW\CenPack\Series",
+    r"E:\115\!NSFW\CenPack\Actress",
     r"E:\115\!NSFW\4k",
     # r"E:\115\!NSFW\Anthology\Gachinco",
 ]
@@ -351,6 +354,7 @@ def process_results(raw: list, root_dirs: list) -> dict:
             if not is_folder and size > 0:
                 ext_1 = os.path.splitext(name)[1].lower()
                 e1 = d1[key1]
+                e1['is_file_item'] = True   # path points to the file, not a folder
                 e1['total_size'] += size
                 e1['file_count'] += 1
                 if ext_1 in VIDEO_EXTS:
@@ -441,6 +445,7 @@ def process_results(raw: list, root_dirs: list) -> dict:
                 'bango':            fb,
                 'series':           fs,
                 'is_jav':           True,
+                'is_file_item':     True,   # path points to the file, not a folder
                 'total_size':       f['size'],
                 'total_size_human': f.get('size_human', bytes_to_human(f['size'])),
                 'file_count':       1,
