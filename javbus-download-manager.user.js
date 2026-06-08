@@ -47,7 +47,7 @@
             // Gachinco: GACHI-1156 -> GACHI 1156 (hyphen to space)
             '3r': {
                 locations: ['E:\\115\\!NSFW\\Anthology\\Gachinco'],
-                stem: (b) => b.replace(/-/g, ' '),
+                stem: (b) => b.replace(/-/g, ''),
             },
         },
 
