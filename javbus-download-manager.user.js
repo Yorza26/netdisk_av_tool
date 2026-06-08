@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         JavBus download manager (marker + missing magnet downloader)
 // @namespace    https://github.com/roy/javbus-scripts
-// @version      3.1
+// @version      4.1
 // @description  On any JavBus list page, tag the items you have already downloaded (checked via the Everything app HTTP server), and batch-download the missing ones by opening detail tabs and sending the preferred magnet to your torrent client. Default location scan covers all videos; mesubuta and 1000giri keep their custom rules.
 // @author       Roy
 // @match        https://www.javbus.com/*
@@ -133,9 +133,14 @@
         return rule.locations.map((loc) => `<"${loc}" ${stem}>`).join(' | ');
     }
 
-    function everythingCount(code, rule) {
+    const VIDEO_EXT_RE = /\.(mp4|mkv|avi|wmv|ts|m2ts|mov|flv|rmvb|rm|iso|m4v|mpg|mpeg|webm|vob|strm)$/i;
+
+    // Returns { count, playPath } — playPath is the full Windows path of the
+    // best-matching video file (for the PotPlayer button), or null.
+    function everythingQuery(code, rule) {
         const url = CONFIG.everythingHost + '/?search=' +
-            encodeURIComponent(everythingSearch(code, rule)) + '&json=1&count=1';
+            encodeURIComponent(everythingSearch(code, rule)) +
+            '&json=1&path_column=1&count=50';
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: 'GET',
@@ -144,10 +149,17 @@
                 onload: (res) => {
                     try {
                         const data = JSON.parse(res.responseText);
-                        const n = (typeof data.totalResults === 'number')
-                            ? data.totalResults
-                            : (data.results ? data.results.length : 0);
-                        resolve(n);
+                        const results = data.results || [];
+                        const count = (typeof data.totalResults === 'number')
+                            ? data.totalResults : results.length;
+                        const files = results.filter((r) => r.type === 'file');
+                        const pick = files.find((r) => VIDEO_EXT_RE.test(r.name)) ||
+                            files[0] || results[0];
+                        let playPath = null;
+                        if (pick && typeof pick.path === 'string') {
+                            playPath = pick.path.replace(/\\+$/, '') + '\\' + pick.name;
+                        }
+                        resolve({ count, playPath });
                     } catch (e) { reject(new Error('parse: ' + e.message)); }
                 },
                 onerror: () => reject(new Error('network')),
@@ -209,6 +221,13 @@
                 padding: 2px 7px; border-radius: 4px; font: 700 12px/1 sans-serif;
                 color: #fff; background: #43a047; pointer-events: none;
             }
+            .dl-play-btn {
+                position: absolute; top: 6px; right: 6px; z-index: 21;
+                border: 0; border-radius: 4px; padding: 3px 8px; cursor: pointer;
+                font: 700 13px/1 sans-serif; color: #fff; background: #e53935;
+                box-shadow: 0 2px 8px rgba(0,0,0,.4);
+            }
+            .dl-play-btn:hover { background: #ff5252; }
             /* downloader states (apply to missing items) */
             .jb-dm-queued > .movie-box { outline: 3px solid #1976d2 !important; }
             .jb-dm-done   > .movie-box { outline: 3px solid #8e24aa !important; opacity: .72; }
@@ -243,12 +262,12 @@
             const next = () => {
                 if (idx >= items.length) return;
                 const entry = items[idx++];
-                everythingCount(entry.code, rule)
-                    .then((n) => {
+                everythingQuery(entry.code, rule)
+                    .then(({ count, playPath }) => {
                         entry.item.classList.add('dl-checked');
-                        if (n > 0) {
+                        if (count > 0) {
                             entry.item.classList.add('dl-have');
-                            addHaveBadge(entry.item);
+                            addHaveBadge(entry.item, playPath);
                             checkStats.have++;
                         } else {
                             entry.item.classList.add('dl-missing');
@@ -276,13 +295,27 @@
             if (!items.length) checksDone = true;
         }
 
-        function addHaveBadge(item) {
+        function addHaveBadge(item, playPath) {
             const box = item.querySelector('.movie-box');
             if (!box || box.querySelector('.dl-have-badge')) return;
             const b = document.createElement('div');
             b.className = 'dl-have-badge';
             b.textContent = '✔ DL';
             box.appendChild(b);
+
+            if (playPath) {
+                const play = document.createElement('button');
+                play.type = 'button';
+                play.className = 'dl-play-btn';
+                play.textContent = '▶';
+                play.title = 'Play in PotPlayer\n' + playPath;
+                play.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    openInPotPlayer(playPath);
+                });
+                box.appendChild(play);
+            }
         }
 
         // missing = checked, not found, has code
@@ -642,4 +675,33 @@
     }
 
     function normalizeSpace(text) { return text.replace(/\s+/g, ' ').trim(); }
+
+    // Local Windows path for PotPlayer: bare path with forward slashes, no
+    // percent-encoding (PotPlayer wants the literal path, e.g. brackets must
+    // stay "[BD]" not "%5B...%5D"). Backslashes -> forward slashes so the drive
+    // letter's first "/" terminates the URL authority, keeping every later char
+    // (including @, [, ], !) in the path component where it is left literal.
+    function pathToFileUrl(path) {
+        return path.replace(/\\/g, '/');
+    }
+
+    // Open a downloaded file in PotPlayer.
+    //  - .iso: opened directly via a local file:/// URL (ISO can't be parsed
+    //    over the flat CloudDrive2 stream; ISO paths here have no CJK chars).
+    //  - everything else: streamed via the CloudDrive2 HTTP URL, which avoids
+    //    the CJK-vs-codepage breakage of local paths in PotPlayer.
+    function openInPotPlayer(path) {
+        let url;
+        if (/\.iso$/i.test(path)) {
+            // No "//" so the drive (E:) is an opaque path, not the URL authority.
+            // This keeps the "E:" colon intact in Edge (Edge drops it when the
+            // drive sits in the authority of potplayer://E:/...).
+            url = 'potplayer:' + pathToFileUrl(path);
+        } else {
+            const cloudPath = '/' + path.replace(/^[A-Za-z]:\\/, '').replace(/\\/g, '/');
+            const cdUrl = `http://localhost:19798/static/http/localhost:19798/False/${encodeURIComponent(cloudPath)}?check_expire=True`;
+            url = 'potplayer://' + cdUrl;
+        }
+        window.location.href = url;
+    }
 })();

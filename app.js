@@ -664,12 +664,19 @@ function renderDetailShell(item) {
 }
 
 function openInPotPlayer(path) {
-  // Build the CloudDrive2 streaming URL the same way the CE115 userscript does.
-  // Strip the drive letter, encode the full cloud path (including / → %2F),
-  // then hand it to PotPlayer as an HTTP stream — no local path encoding issues.
-  const cloudPath = '/' + path.replace(/^[A-Za-z]:\\/, '').replace(/\\/g, '/');
-  const cdUrl = `http://localhost:19798/static/http/localhost:19798/False/${encodeURIComponent(cloudPath)}?check_expire=True`;
-  window.location.href = 'potplayer://' + cdUrl;
+  if (path.toLowerCase().endsWith('.iso')) {
+    // ISO files can't be streamed via CloudDrive; open the local path directly.
+    // ISO paths contain no CJK, so the opaque potplayer: scheme (no //) is safe
+    // and preserves the drive-letter colon and brackets without Chrome mangling.
+    window.location.href = 'potplayer:' + path.replace(/\\/g, '/');
+  } else {
+    // Build the CloudDrive2 streaming URL the same way the CE115 userscript does.
+    // Strip the drive letter, encode the full cloud path (including / → %2F),
+    // then hand it to PotPlayer as an HTTP stream — no local path encoding issues.
+    const cloudPath = '/' + path.replace(/^[A-Za-z]:\\/, '').replace(/\\/g, '/');
+    const cdUrl = `http://localhost:19798/static/http/localhost:19798/False/${encodeURIComponent(cloudPath)}?check_expire=True`;
+    window.location.href = 'potplayer://' + cdUrl;
+  }
 }
 
 const _VIDEO_EXTS = new Set(['.mp4','.mkv','.avi','.wmv','.mov','.m4v','.ts','.m2ts','.iso','.rmvb','.flv','.webm']);
