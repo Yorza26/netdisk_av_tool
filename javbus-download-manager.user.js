@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         JavBus download manager (marker + missing magnet downloader)
 // @namespace    https://github.com/roy/javbus-scripts
-// @version      3.0
+// @version      3.1
 // @description  On any JavBus list page, tag the items you have already downloaded (checked via the Everything app HTTP server), and batch-download the missing ones by opening detail tabs and sending the preferred magnet to your torrent client. Default location scan covers all videos; mesubuta and 1000giri keep their custom rules.
 // @author       Roy
 // @match        https://www.javbus.com/*
@@ -43,6 +43,11 @@
             '3s': {
                 locations: ['E:\\115\\!NSFW\\Anthology\\1000 Giri'],
                 stem: (b) => (b.match(/\d+/) || [b])[0],
+            },
+            // Gachinco: GACHI-1156 -> GACHI 1156 (hyphen to space)
+            '3r': {
+                locations: ['E:\\115\\!NSFW\\Anthology\\Gachinco'],
+                stem: (b) => b.replace(/-/g, ' '),
             },
         },
 
