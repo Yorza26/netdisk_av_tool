@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         JavBus download manager (marker + missing magnet downloader)
 // @namespace    https://github.com/roy/javbus-scripts
-// @version      4.1
+// @version      4.2
 // @description  On any JavBus list page, tag the items you have already downloaded (checked via the Everything app HTTP server), and batch-download the missing ones by opening detail tabs and sending the preferred magnet to your torrent client. Default location scan covers all videos; mesubuta and 1000giri keep their custom rules.
 // @author       Roy
 // @match        https://www.javbus.com/*
+// @match        https://www.javbus.bond/*
 // @grant        GM_openInTab
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
@@ -63,7 +64,7 @@
         magnetOpenDelayMs: 1500,
         autoNextPageDelayMs: 3000,
         pollMs: 800,
-        priorityWords: ['thz', 'ses-23', 'sis001', 'arsenal'],
+        priorityWords: ['thz', 'ses-23', 'sis001', '[jav] [uncensored]', 'arsenal'],
 
         // ---- Storage keys ----
         taskKey: 'javbus-dm-tasks-v1',
