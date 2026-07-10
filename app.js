@@ -18,6 +18,7 @@ let markedItems    = new Set();
 let multiSelected  = new Set();   // paths currently multi-selected
 let lastMultiIndex = -1;          // index in filteredItems of last Ctrl/Shift click
 let currentView    = 'dashboard';
+let viewScrollTop  = {};
 let selectedItem   = null;
 let countChart     = null;
 let sizeChart      = null;
@@ -148,7 +149,27 @@ function hideAllViews() {
   document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
 }
 
+function mainScrollEl() {
+  return el('main') || document.scrollingElement || document.documentElement;
+}
+
+function rememberViewScroll(name) {
+  if (!name) return;
+  viewScrollTop[name] = mainScrollEl().scrollTop || 0;
+}
+
+function restoreViewScroll(name) {
+  const top = viewScrollTop[name];
+  if (top === undefined) return;
+
+  requestAnimationFrame(() => {
+    mainScrollEl().scrollTop = top;
+  });
+}
+
 function showView(name) {
+  if (currentView && currentView !== name) rememberViewScroll(currentView);
+
   hideAllViews();
   currentView = name;
   lastMultiIndex = -1;   // indices are view-specific; reset on tab switch
@@ -166,6 +187,8 @@ function showView(name) {
   else if (name === 'actress')    renderActress();
   else if (name === 'classifier') renderClassifier();
   else if (name === 'nonjav')     renderNonJav();
+
+  if (name === 'actress') restoreViewScroll(name);
 }
 
 
