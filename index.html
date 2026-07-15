@@ -122,6 +122,16 @@
           <canvas id="chart-size"></canvas>
         </div>
       </div>
+      <div class="charts-row">
+        <div class="chart-card">
+          <h3>Top 20 Makers — by count</h3>
+          <canvas id="chart-maker"></canvas>
+        </div>
+        <div class="chart-card">
+          <h3>Top 20 Genres — by count</h3>
+          <canvas id="chart-genre"></canvas>
+        </div>
+      </div>
     </div>
 
     <!-- ── BROWSE ── -->
@@ -129,10 +139,15 @@
       <div class="toolbar">
         <h2 class="view-title">Browse</h2>
         <div class="toolbar-controls">
-          <input type="search" id="search-box" placeholder="Search name / bango…" oninput="applyFilters()" />
+          <input type="search" id="search-box"
+                 placeholder="Search bango / title / actress… (or maker:S1 label:… genre:… series:…)"
+                 oninput="applyFilters()" />
           <select id="sort-select" onchange="applyFilters()">
             <option value="size-desc">Size ↓ (largest first)</option>
             <option value="size-asc">Size ↑ (smallest first)</option>
+            <option value="date-desc">Release date ↓ (newest)</option>
+            <option value="date-asc">Release date ↑ (oldest)</option>
+            <option value="score-desc">Score ↓</option>
             <option value="name-asc">Name A→Z</option>
             <option value="name-desc">Name Z→A</option>
             <option value="series-asc">Series A→Z</option>
@@ -149,13 +164,15 @@
 
     <!-- ── STATISTICS ── -->
     <div id="view-statistics" class="view hidden">
-      <h2 class="view-title">Series Statistics</h2>
+      <h2 class="view-title">Statistics</h2>
+      <!-- Dimension switcher (Series code / Maker / Label / Genre / Series / Director) -->
+      <div class="cat-bar" id="stat-dim-bar"></div>
       <div class="table-wrap">
         <table id="series-table">
           <thead>
             <tr>
               <th>#</th>
-              <th class="sortable" onclick="sortSeriesTable('series')">Series</th>
+              <th class="sortable" id="stat-dim-col" onclick="sortSeriesTable('series')">Series</th>
               <th class="sortable" onclick="sortSeriesTable('count')">Count ↕</th>
               <th class="sortable" onclick="sortSeriesTable('size')">Total Size ↕</th>
             </tr>
@@ -171,22 +188,15 @@
         <h2 class="view-title">Actresses</h2>
         <div class="toolbar-controls">
           <input type="search" id="actress-search" placeholder="Search actress…" oninput="renderActress()" />
+          <select id="actress-sort" onchange="renderActress()">
+            <option value="count-desc">Items ↓</option>
+            <option value="size-desc">Total size ↓</option>
+            <option value="name-asc">Name A→Z</option>
+          </select>
         </div>
         <div class="result-count"><span id="actress-result-count">—</span></div>
       </div>
-      <div class="table-wrap">
-        <table id="actress-table">
-          <thead>
-            <tr>
-              <th>#</th>
-              <th class="sortable" onclick="sortActressTable('name')">Actress</th>
-              <th class="sortable" onclick="sortActressTable('count')">Items ↕</th>
-              <th class="sortable" onclick="sortActressTable('size')">Total Size ↕</th>
-            </tr>
-          </thead>
-          <tbody id="actress-body"></tbody>
-        </table>
-      </div>
+      <div id="actress-grid" class="actress-grid"></div>
     </div>
 
     <!-- ── CLASSIFIER ── -->

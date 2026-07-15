@@ -11,14 +11,13 @@ A local-first, browser-based media collection manager for JAV (Japanese Adult Vi
 There is no build system. All scripts run directly with Python 3.8+ (standard library only — no `pip install` needed).
 
 ```bash
-# Scan collection and fetch up to 50 missing covers/metadata
+# Scan collection and fetch up to 50 missing metadata records (MetaTube)
 python scan.py
 
 # Scan with options
-python scan.py --all-meta        # fetch ALL missing covers in one run
+python scan.py --all-meta        # fetch ALL missing metadata + actress avatars in one run
 python scan.py --skip-meta       # scan only, no network calls
-python scan.py --fill-actresses  # patch missing actress data via javhoo
-python scan.py --test-bango MIDE-332  # debug bango extraction for one code
+python scan.py --test-bango MIDE-332  # debug MetaTube fetch for one code
 
 # Classify items by genre (rules-based + optional Ollama LLM fallback)
 python classify.py
@@ -39,8 +38,9 @@ No tests, linters, or CI are configured.
 ### Data Flow
 
 ```
-Everything HTTP API → scan.py → data.js (167 MB JS global)
-                               meta_cache.json (bango → metadata)
+Everything HTTP API → scan.py → data.js (JS global: items + actress avatars)
+         MetaTube API ↗        meta_cache.json (bango → full metadata)
+                               actress_cache.json (name → avatar images)
 
 data.js → classify.py → classify_data.js
                        classify_cache.json (path → category)
@@ -50,23 +50,24 @@ data.js + classify_data.js + config.js → index.html + app.js (browser UI)
 
 ### Key Files
 
-- **`scan.py`** (1280 lines) — Core engine: queries the [Everything](https://www.voidtools.com/) search HTTP API, extracts bango codes, fetches metadata from jav321.com / javhoo.com / avsox.click, writes `data.js`.
-- **`classify.py`** (579 lines) — Genre classifier: 200+ regex rules first, Ollama (`gemma4:e4b`) as fallback for ambiguous items, writes `classify_data.js`.
-- **`serve.py`** (95 lines) — HTTP server for LAN/iOS access; detects local IP and writes `config.js` so remote devices can open file links via Everything's HTTP server.
-- **`app.js`** (1151 lines) — All frontend logic: tabs (Dashboard, Browse, Statistics, Actresses, Classifier, Non-JAV), lazy loading, multi-select, mark-for-deletion, lightbox.
+- **`scan.py`** — Core engine: queries the [Everything](https://www.voidtools.com/) search HTTP API, extracts bango codes, fetches metadata (title, cover, actresses, maker, label, series, genres, director, release date, runtime, score, summary, preview images) from a self-hosted [MetaTube](https://github.com/metatube-community/metatube-sdk-go) API server, plus actress avatars via MetaTube's Gfriends actor provider. Writes `data.js`. See `METATUBE_API.md` for the API reference.
+- **`classify.py`** — Genre classifier: 200+ regex rules first, Ollama (`gemma4:e4b`) as fallback for ambiguous items, writes `classify_data.js`.
+- **`serve.py`** — HTTP server for LAN/iOS access; detects local IP and writes `config.js` so remote devices can open file links via Everything's HTTP server.
+- **`app.js`** — All frontend logic: tabs (Dashboard, Browse, Statistics, Actresses, Classifier, Non-JAV), field-scoped search (`maker:S1`, `label:"…"`, `genre:…`, `actress:…`, `series:`, `mseries:`, `director:`, `provider:`), multi-dimension statistics, actress card grid with avatars, rich detail panel (metadata table, genre chips, preview images), lazy loading, multi-select, mark-for-deletion, lightbox.
 - **`index.html`** / **`style.css`** — Dark-theme UI shell.
 
 ### Generated Files (gitignored, do not edit by hand unless patching cache)
 
 | File | Contents | Key |
 |------|----------|-----|
-| `data.js` | `window.__javData__` global — full collection snapshot | — |
-| `meta_cache.json` | cover URL, title, actresses per bango | bango code |
+| `data.js` | `window.__javData__` global — items + `actresses` avatar map | — |
+| `meta_cache.json` | full MetaTube metadata per bango (`_v` = schema version) | bango code |
+| `actress_cache.json` | avatar image URLs per actress ({} = cached miss) | actress name |
 | `classify_data.js` | `window.__classifyData__` global — genre per path | — |
 | `classify_cache.json` | genre per path | full filesystem path |
 | `config.js` | Everything server URL written at serve.py startup | — |
 
-`meta_cache.json` is keyed by **bango** (survives folder reorganization). `classify_cache.json` is keyed by **full path** (must be refreshed if directories move).
+`meta_cache.json` is keyed by **bango** (survives folder reorganization). Entries with `_v` older than `META_VERSION` in scan.py are re-fetched on the next run; legacy fields are kept as a fallback when MetaTube has no match. `classify_cache.json` is keyed by **full path** (must be refreshed if directories move).
 
 ### Configuration Constants (edit at top of each file)
 
@@ -75,7 +76,12 @@ data.js + classify_data.js + config.js → index.html + app.js (browser UI)
 ROOT_DIRS = [r"E:\115\云下载", ...]   # directories to scan
 EVERYTHING_PORT = 80                  # Everything HTTP server port
 META_PER_RUN = 50                     # max new metadata fetches per run
+ACTRESS_PER_RUN = 100                 # max new actress avatar lookups per run
 META_DELAY = 0.3                      # seconds between requests
+METATUBE_URL = "https://..."          # self-hosted MetaTube API server
+METATUBE_TOKEN = ""                   # Bearer token if the server uses -token
+META_VERSION = 2                      # bump to force full metadata re-fetch
+PROVIDER_PRIORITY = ["FANZA", ...]    # which provider wins on multi-hit search
 ```
 
 **`classify.py`:**
@@ -118,5 +124,5 @@ Browse and Classifier tabs render 15 items at a time and append more on scroll. 
 
 - **Windows 10/11** with [Everything](https://www.voidtools.com/) installed and its HTTP server enabled
 - **Python 3.8+** (stdlib only)
-- **Internet access** for metadata fetching (jav321.com, javhoo.com, avsox.click)
+- **MetaTube API server** (self-hosted, see `METATUBE_URL` in scan.py) for metadata fetching
 - **Ollama** (optional) with `gemma4:e4b` model for LLM classification fallback

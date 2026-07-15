@@ -3,11 +3,12 @@
 """
 JAV Collection Scanner  —  stdlib only, no pip install needed
 Queries Everything's HTTP API and saves a snapshot to data.js.
-Fetches metadata (cover, title, actresses) from jav321.com — no cookies needed.
+Fetches metadata (title, cover, actresses, maker, label, series, genres, …)
+from a self-hosted MetaTube API server (see METATUBE_URL below).
 Then open index.html directly in your browser — no server needed.
 
 Usage:
-    python scan.py                          # full scan + metadata (100 per run)
+    python scan.py                          # full scan + metadata (50 per run)
     python scan.py --all-meta               # full scan + fetch ALL missing metadata
     python scan.py --skip-meta              # fast scan, no metadata
     python scan.py --test-bango MIDE-332    # test metadata fetch for one bango
@@ -16,8 +17,6 @@ Usage:
 import urllib.request
 import urllib.parse
 import urllib.error
-import gzip as _gzip
-import zlib
 import json
 import re
 import os
@@ -50,15 +49,35 @@ ROOT_DIRS = [
     r"E:\115\!NSFW\CenPack\Series",
     r"E:\115\!NSFW\CenPack\Actress",
     r"E:\115\!NSFW\4k",
-    # r"E:\115\!NSFW\ISO",
-    # r"E:\115\!NSFW\Anthology\Gachinco",
+    r"E:\115\!NSFW\ISO",
+    r"E:\115\!NSFW\Anthology\Gachinco",
 ]
 OUTPUT_FILE     = "data.js"
 META_CACHE_FILE     = "meta_cache.json"
+ACTRESS_CACHE_FILE  = "actress_cache.json"    # actress avatar URLs (MetaTube/Gfriends)
 CLASSIFY_CACHE_FILE = "classify_cache.json"   # written by classify.py
 META_PER_RUN    = 50    # max new items to fetch per scan run
-META_DELAY      = 0.3    # seconds between metadata requests (be polite)
+ACTRESS_PER_RUN = 100    # max new actress avatar lookups per scan run
+META_DELAY      = 0.1    # seconds between items — throttles MetaTube's UPSTREAM scraping
+                         # (JavBus/FANZA/… ban aggressive IPs; Railway IPs are shared).
+                         # Cached items are served from MetaTube's own DB instantly,
+                         # so this only matters for cold fetches.
 EVERYTHING_PORT = 80     # Change if you changed it in Everything's options
+
+# ── MetaTube API server (https://github.com/metatube-community/metatube-sdk-go) ──
+METATUBE_URL   = "https://metatube-server-production-967d.up.railway.app"
+METATUBE_TOKEN = ""      # only needed if the server was started with -token
+META_VERSION   = 2       # bump to force a full re-fetch of all cached metadata
+
+# When several providers return the same bango, the first match in this list
+# wins (full info is fetched from it). Case-insensitive; unlisted providers
+# rank last. Missing key fields are backfilled from the runner-up provider.
+PROVIDER_PRIORITY = [
+    "FANZA", "MGS", "JavBus", "JAV321", "AVE", "SOD", "FALENO", "DAHLIA",
+    "DUGA", "Getchu", "HEYZO", "Caribbeancom", "CaribbeancomPR", "1Pondo",
+    "10musume", "PACOPACOMAMA", "MURAMURA", "TOKYO-HOT", "KIN8", "HeyDouga",
+    "FC2", "FC2PPVDB", "fc2hub", "C0930", "H0930", "H4610", "MYWIFE",
+]
 
 # ─────────────────────────────────────────────
 # Constants
@@ -519,8 +538,8 @@ def process_results(raw: list, root_dirs: list) -> dict:
 
 
 # ─────────────────────────────────────────────
-# jav321.com metadata fetching
-# (No cookies needed — cover images from pics.dmm.co.jp are public)
+# MetaTube metadata fetching
+# (self-hosted API server — see METATUBE_URL at the top)
 # ─────────────────────────────────────────────
 
 _META_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -528,346 +547,163 @@ _META_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
             'Chrome/124.0.0.0 Safari/537.36')
 
 
-def _http_fetch(url: str, headers: dict, *,
-                data: bytes = None, timeout: int = 12):
-    """GET (or POST when data is given) with automatic gzip/deflate decompression.
+def _metatube_get(path: str, params: dict = None):
+    """GET <METATUBE_URL><path>?<params> and unwrap the {"data": ...} envelope.
 
-    Always sends Accept-Encoding: gzip, deflate so servers return compressed
-    bodies — typically 5-10x smaller than plain text, which cuts VPN data usage
-    significantly. urllib.request does NOT add this header by default.
-
-    Returns (html_str, final_url).  final_url is needed for POST redirects
-    (jav321 search → video page) to check whether we landed on a real result.
-    """
-    h = {**headers, 'Accept-Encoding': 'gzip, deflate'}
-    req = urllib.request.Request(url, headers=h, data=data)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        body      = r.read()
-        final_url = r.url
-        enc       = r.headers.get('Content-Encoding', '').lower()
-        if 'gzip' in enc:
-            body = _gzip.decompress(body)
-        elif 'deflate' in enc:
-            try:
-                body = zlib.decompress(body)
-            except zlib.error:
-                body = zlib.decompress(body, -zlib.MAX_WBITS)  # raw deflate
-    return body.decode('utf-8', errors='replace'), final_url
-
-
-def _jav321_id(bango: str) -> str:
-    """Convert MIDE-332 → mide00332, DOCP-175 → docp00175 (jav321 URL format)."""
-    m = re.match(r'^([A-Za-z]+)-?(\d+)', bango.strip())
-    if m:
-        return m.group(1).lower() + m.group(2).zfill(5)
-    return bango.lower().replace('-', '')
-
-
-def _fetch_one_meta(bango: str) -> dict:
-    """Fetch cover, title, actresses from jav321.com for a single bango.
-    No login/cookies needed. Cover images served by pics.dmm.co.jp (public).
-    Returns {} on not-found, {'_err': msg} on network error."""
-    vid = _jav321_id(bango)
-    url = f"https://www.jav321.com/video/{vid}"
-    headers = {
-        'User-Agent':      _META_UA,
-        'Accept-Language': 'ja,zh-TW;q=0.9,zh;q=0.8,en;q=0.7',
-    }
-
-    html = ''
+    Returns (data, None) on success, (None, errmsg) on network/server error.
+    A 404 (movie/actor not found) returns (None, None) so callers can
+    distinguish "not found" from real errors."""
+    url = METATUBE_URL.rstrip('/') + path
+    if params:
+        url += '?' + urllib.parse.urlencode(params)
+    headers = {'User-Agent': _META_UA, 'Accept': 'application/json'}
+    if METATUBE_TOKEN:
+        headers['Authorization'] = f'Bearer {METATUBE_TOKEN}'
+    req = urllib.request.Request(url, headers=headers)
     try:
-        html, _ = _http_fetch(url, headers)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            body = r.read()
+        obj = json.loads(body.decode('utf-8'))
+        return obj.get('data'), None
     except urllib.error.HTTPError as e:
         if e.code == 404:
-            # Direct URL 404 — try POST search as fallback
-            try:
-                post_data = urllib.parse.urlencode({'sn': bango}).encode()
-                post_headers = {**headers,
-                                'Content-Type': 'application/x-www-form-urlencoded',
-                                'Referer':      'https://www.jav321.com/'}
-                html, final_url = _http_fetch(
-                    "https://www.jav321.com/search", post_headers,
-                    data=post_data, timeout=15)
-                if '/video/' not in final_url:
-                    return {}   # search didn't land on a video page
-            except Exception as e2:
-                return {'_err': str(e2)}
-        else:
-            return {'_err': str(e)}
+            return None, None          # not found — not an error
+        return None, f"HTTP {e.code}"
     except Exception as exc:
-        return {'_err': str(exc)}
-
-    if not html:
-        return {}
-
-    # ── Title: <h3>TITLE<small>bango actress</small></h3> ──
-    m = re.search(r'<h3>([^<]+)<small>', html)
-    title = m.group(1).strip() if m else ''
-
-    # ── Cover: first DMM ps.jpg → upgrade to pl.jpg (large ~160-180 KB) ──
-    cover = ''
-    m = re.search(r'src="(https?://pics\.dmm\.co\.jp/[^"]+ps\.jpg)"', html)
-    if m:
-        cover = m.group(1).replace('ps.jpg', 'pl.jpg')
-        cover = re.sub(r'(?<=\.jp)//', '/', cover)   # fix double slash
-
-    # ── Actresses: /star/NNN/N links (deduplicated) ──
-    actresses = list(dict.fromkeys(
-        re.findall(r'href="/star/\d+/\d+">([^<]+)</a>', html)
-    ))
-
-    return {'cover': cover, 'title': title, 'actresses': actresses}
+        return None, str(exc)
 
 
-# ─────────────────────────────────────────────
-# Uncensored metadata: javhoo.com (primary) + avsox.click (fallback)
-# ─────────────────────────────────────────────
+def _mt_search_term(bango: str) -> str:
+    """Convert an internal bango to the term MetaTube searches best with.
 
-def _javhoo_url(bango: str) -> str:
-    """Build a direct javhoo.com page URL for any bango.
-
-    javhoo uses the bango directly in the URL path for most studios:
-      HEYZO-3837         →  /ja/HEYZO-3837
-      NHDTB-001          →  /ja/NHDTB-001
-      MIDE-332           →  /ja/MIDE-332
-      FC2-PPV-1234567    →  /ja/FC2-PPV-1234567
-
-    For date-based codes (1PONDO / CARIBBEANCOM / CARIBPR), the studio prefix
-    is stripped and the remaining MMDDYY-NNN part is used directly:
-      1PONDO-052124-001      →  /ja/052124-001
-      CARIBBEANCOM-102720-001 →  /ja/102720-001
-      CARIBPR-041426-001     →  /ja/041426-001
-    """
-    # 1PONDO-MMDDYY-NNN  →  /ja/MMDDYY-NNN
-    m = re.match(r'^1PONDO-(\d{6})-(\d{3,4})$', bango, re.I)
-    if m:
-        return f"https://www.javhoo.com/ja/{m.group(1)}-{m.group(2)}"
-    # CARIBBEANCOM-MMDDYY-NNN  →  /ja/MMDDYY-NNN
-    m = re.match(r'^CARIBBEANCOM-(\d{6})-(\d{3,4})$', bango, re.I)
-    if m:
-        return f"https://www.javhoo.com/ja/{m.group(1)}-{m.group(2)}"
-    # CARIBPR-MMDDYY-NNN  →  /ja/MMDDYY-NNN
-    m = re.match(r'^CARIBPR-(\d{6})-(\d{3,4})$', bango, re.I)
-    if m:
-        return f"https://www.javhoo.com/ja/{m.group(1)}-{m.group(2)}"
-    # All others: use bango as-is
-    return f"https://www.javhoo.com/ja/{bango}"
-
-
-def _fetch_one_meta_javhoo(bango: str) -> dict:
-    """Fetch cover / title / actresses from javhoo.com for any bango.
-    Returns {} on not-found (HTTP 404), {'_err': msg} on network error."""
-    url = _javhoo_url(bango)
-
-    headers = {
-        'User-Agent':      _META_UA,
-        'Accept-Language': 'ja,zh-TW;q=0.9,zh;q=0.8,en;q=0.7',
-        'Referer':         'https://www.javhoo.com/',
-    }
-    try:
-        html, _ = _http_fetch(url, headers)
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return {}
-        return {'_err': f"javhoo HTTP {e.code}"}
-    except Exception as exc:
-        return {'_err': f"javhoo {exc}"}
-
-    # Cover image comes in two formats depending on studio:
-    #   date codes (1PONDO/CARIB): src="https://pics.javhoo.net/YYYY/MM/{code}_b.jpg"
-    #   series codes (NHDTB/MIDE/…): src="https://pics.javhoo.net/YYYY/MM/cover/{bango}.jpg"
-    cover = ''
-    m = re.search(r'src="(https://pics\.javhoo\.net/[^"]+_b\.jpg)"', html)
-    if m:
-        cover = m.group(1)
-    if not cover:
-        m = re.search(r'src="(https://pics\.javhoo\.net/[^"]+/cover/[^"]+\.jpg)"', html)
-        if m:
-            cover = m.group(1)
-
-    # Title: <h1> contains "BANGO title actress" — strip leading bango/date-code
-    # For 1PONDO/CARIB the bango in the H1 is the stripped form (MMDDYY-NNN),
-    # so we need to strip both the internal bango and the URL-form prefix.
-    title = ''
-    m = re.search(r'<h1[^>]*>([^<]+)</h1>', html)
-    if m:
-        raw = m.group(1).strip()
-        # Build the code that javhoo uses in the H1 (may differ from our bango key)
-        url_code = _javhoo_url(bango).rsplit('/', 1)[-1]   # last path segment
-        for prefix in (bango, url_code):
-            raw = re.sub(r'^' + re.escape(prefix) + r'[\s　]+', '', raw, flags=re.IGNORECASE)
-        title = raw.strip().strip('「」').strip()
-
-    # Actresses — javhoo uses SINGLE-QUOTED href attributes (href='...') inside
-    # pods_widget_field divs.  All double-quote-only regexes fail silently.
-    # Strategy: match either quote style; search the specific <h3>演員</h3> field
-    # rather than the bare text "演員" (which also appears in search form placeholders).
-    actresses = []
-
-    # Pattern A: /ja/star/ links — either quote style
-    for _pat in (
-        r"""href=['"]https://www\.javhoo\.com/ja/star/[^'"]+?['"][^>]*>([^<]+)</a>""",
-        r"""href=['"]/ja/star/[^'"]+?['"][^>]*>([^<]+)</a>""",
-    ):
-        _found = list(dict.fromkeys(n.strip() for n in re.findall(_pat, html) if n.strip()))
-        if _found:
-            actresses = _found
-            break
-
-    # Pattern B: /tag/ links (WordPress-style slugs) — either quote style
-    if not actresses:
-        for _pat in (
-            r"""href=['"]https://www\.javhoo\.com/tag/[^'"]+?['"][^>]*>([^<]+)</a>""",
-            r"""href=['"]/tag/[^'"]+?['"][^>]*>([^<]+)</a>""",
-        ):
-            _found = list(dict.fromkeys(n.strip() for n in re.findall(_pat, html) if n.strip()))
-            if _found:
-                actresses = _found
-                break
-
-    # Pattern C: find <h3>演員</h3> label (the real movie-info field, not the
-    # search-form placeholder) and extract <a> link texts that follow it.
-    if not actresses:
-        _m = re.search(r'<h3>演[員员][^<]*</h3>(.*?)</div>', html, re.DOTALL | re.IGNORECASE)
-        if _m:
-            _candidates = re.findall(r'<a\b[^>]*>([^<]+)</a>', _m.group(1))
-            actresses = list(dict.fromkeys(
-                c.strip() for c in _candidates if c.strip() and len(c.strip()) <= 30
-            ))
-
-    return {'cover': cover, 'title': title, 'actresses': actresses}
-
-
-def _avsox_search_term(bango: str) -> str:
-    """Convert an internal bango to the raw code avsox.click uses in searches."""
-    # 1PONDO-MMDDYY-NNN  →  MMDDYY_NNN
+    Date-based studio codes carry an internal studio prefix that MetaTube's
+    providers don't use in their numbers — strip it:
+      1PONDO-101015-001       →  101015_001
+      CARIBBEANCOM-102720-001 →  102720-001
+      CARIBPR-041426-001      →  041426-001
+    Everything else (MIDE-332, HEYZO-2345, FC2-PPV-1234567) searches as-is."""
     m = re.match(r'^1PONDO-(\d{6})-(\d{3,4})$', bango, re.I)
     if m:
         return f"{m.group(1)}_{m.group(2)}"
-    # CARIBBEANCOM-MMDDYY-NNN  →  MMDDYY-NNN
-    m = re.match(r'^CARIBBEANCOM-(\d{6})-(\d{3,4})$', bango, re.I)
+    m = re.match(r'^(?:CARIBBEANCOM|CARIBPR)-(\d{6})-(\d{3,4})$', bango, re.I)
     if m:
         return f"{m.group(1)}-{m.group(2)}"
-    # CARIBPR-MMDDYY-NNN  →  MMDDYY-NNN
-    m = re.match(r'^CARIBPR-(\d{6})-(\d{3,4})$', bango, re.I)
-    if m:
-        return f"{m.group(1)}-{m.group(2)}"
-    # All others (HEYZO-3851, FC2-PPV-..., etc.) — use as-is
     return bango
 
 
-def _fetch_one_meta_avsox(bango: str) -> dict:
-    """Search avsox.click for a bango and scrape the movie page.
-    Two HTTP requests: search page → movie page.
-    Returns {} on not-found, {'_err': msg} on network error."""
-    term = _avsox_search_term(bango)
-    search_url = f"https://avsox.click/ja/search/{urllib.parse.quote(term, safe='')}"
-    headers = {
-        'User-Agent':      _META_UA,
-        'Accept-Language': 'ja,zh-TW;q=0.9,zh;q=0.8,en;q=0.7',
-        'Referer':         'https://avsox.click/',
+def _norm_num(s: str) -> str:
+    """Normalize a bango/number for comparison: uppercase, alphanumerics only."""
+    return re.sub(r'[^A-Z0-9]', '', (s or '').upper())
+
+
+_PROVIDER_RANK = {p.upper(): i for i, p in enumerate(PROVIDER_PRIORITY)}
+
+
+def _provider_rank(name: str) -> int:
+    return _PROVIDER_RANK.get((name or '').upper(), len(PROVIDER_PRIORITY))
+
+
+def _iso_date(s: str) -> str:
+    """'2016-05-29T00:00:00Z' → '2016-05-29'; hide zero dates."""
+    d = (s or '')[:10]
+    return '' if d.startswith('0001') else d
+
+
+def _meta_from_info(info: dict) -> dict:
+    """Map a MetaTube full-info (or compact search) record onto our cache schema."""
+    return {
+        'title':          info.get('title', ''),
+        'cover':          info.get('big_cover_url') or info.get('cover_url', ''),
+        'thumb':          info.get('big_thumb_url') or info.get('thumb_url', ''),
+        'actresses':      info.get('actors') or [],
+        'maker':          info.get('maker', ''),
+        'label':          info.get('label', ''),
+        'm_series':       info.get('series', ''),
+        'genres':         info.get('genres') or [],
+        'director':       info.get('director', ''),
+        'summary':        info.get('summary', ''),
+        'release_date':   _iso_date(info.get('release_date', '')),
+        'runtime':        info.get('runtime', 0),
+        'score':          info.get('score', 0),
+        'homepage':       info.get('homepage', ''),
+        'preview_images': (info.get('preview_images') or [])[:12],
+        'provider':       info.get('provider', ''),
+        'provider_id':    info.get('id', ''),
     }
 
-    # ── Step 1: search ────────────────────────────────────────────────
-    try:
-        html, _ = _http_fetch(search_url, headers)
-    except Exception as exc:
-        return {'_err': f"avsox search {exc}"}
 
-    # Find movie links; prefer the one whose card text contains the search term
-    pattern = re.compile(
-        r'href="((?:https?:)?//avsox\.click/ja/movie/[a-f0-9]+)"[^>]*>(.*?)</a>',
-        re.DOTALL | re.IGNORECASE,
-    )
-    movie_url = None
-    for href, card_text in pattern.findall(html):
-        if term.lower() in card_text.lower() or bango.lower() in card_text.lower():
-            movie_url = href
-            break
-    if not movie_url:
-        # Fallback: any movie link (first one)
-        m = re.search(r'href="((?:https?:)?//avsox\.click/ja/movie/[a-f0-9]+)"', html)
-        if not m:
-            return {}   # no results
-        movie_url = m.group(1)
-
-    if movie_url.startswith('//'):
-        movie_url = 'https:' + movie_url
-
-    # ── Step 2: movie page ────────────────────────────────────────────
-    try:
-        html2, _ = _http_fetch(movie_url, headers)
-    except Exception as exc:
-        return {'_err': f"avsox movie {exc}"}
-
-    # Cover: player_thumbnail.jpg (best available on avsox)
-    cover = ''
-    m = re.search(r'src="(https?://[^"]+player_thumbnail\.jpg)"', html2)
-    if m:
-        cover = m.group(1)
-    if not cover:  # 1pondo uses str.jpg (sample strip)
-        m = re.search(r'src="(https?://[^"]+str\.jpg)"', html2)
-        if m:
-            cover = m.group(1)
-
-    # Title: <h3>BANGO actress title - 無修正アダルト動画 STUDIO</h3>
-    title = ''
-    m = re.search(r'<h3>([^<]+)</h3>', html2)
-    if m:
-        raw = m.group(1).strip()
-        # Strip bango / raw code prefix
-        for prefix in (bango, term):
-            raw = re.sub(r'^' + re.escape(prefix) + r'\s*', '', raw, flags=re.IGNORECASE)
-        # Strip site suffix " - 無修正アダルト動画 ..."
-        raw = re.sub(r'\s*-\s*無修正アダルト動画.*$', '', raw)
-        # Strip actress name in 【...】 reading brackets (they repeat in actresses list)
-        raw = re.sub(r'【[^】]*】', '', raw)
-        title = raw.strip()
-
-    # Actresses: //avsox.click/ja/star/{hash}
-    actresses = list(dict.fromkeys(
-        re.findall(
-            r'href="(?:https?:)?//avsox\.click/ja/star/[a-f0-9]+"[^>]*>([^<]+)</a>',
-            html2,
-        )
-    ))
-
-    return {'cover': cover, 'title': title, 'actresses': actresses}
+# Image hosts that reject hotlinking (Referer check) — the browser can never
+# load these directly, so data.js gets a MetaTube image-proxy URL instead.
+_HOTLINK_BLOCKED_RE = re.compile(r'https?://[^/]*javbus\.com/', re.I)
 
 
-def _fetch_one_meta_uncensored(bango: str) -> dict:
-    """Uncensored path: javhoo.com first, avsox.click as fallback."""
-    meta = _fetch_one_meta_javhoo(bango)
-    if meta and not meta.get('_err') and (meta.get('cover') or meta.get('title')):
-        meta['_src'] = 'javhoo'
-        return meta
-    avsox = _fetch_one_meta_avsox(bango)
-    if avsox and not avsox.get('_err'):
-        avsox['_src'] = 'avsox'
-    return avsox
+def _usable_image(url: str, provider: str, provider_id: str, kind: str) -> str:
+    """Return `url` unchanged when it's browser-loadable, otherwise a MetaTube
+    /v1/images proxy URL (kind: 'thumb' | 'primary' | 'backdrop') that fetches
+    it server-side with proper headers."""
+    if not url or not _HOTLINK_BLOCKED_RE.match(url):
+        return url
+    if not (provider and provider_id):
+        return url   # can't build a proxy URL — leave it (frontend hides on error)
+    base = METATUBE_URL.rstrip('/')
+    return (f"{base}/v1/images/{kind}/"
+            f"{urllib.parse.quote(provider, safe='')}/"
+            f"{urllib.parse.quote(provider_id, safe='')}"
+            f"?url={urllib.parse.quote(url, safe='')}")
 
 
-def _fetch_one_meta_censored(bango: str) -> dict:
-    """Censored path: javhoo.com first, jav321.com as fallback.
+def _fetch_one_meta(bango: str) -> dict:
+    """Fetch full metadata for one bango via MetaTube.
 
-    javhoo tends to have more complete actress data than jav321, so it is tried
-    first.  jav321 is used as a fallback when javhoo returns nothing (404 / not
-    in database yet)."""
-    javhoo = _fetch_one_meta_javhoo(bango)
-    if javhoo.get('cover') or javhoo.get('title'):
-        javhoo['_src'] = 'javhoo'
-        return javhoo
-    # javhoo returned empty or errored → try jav321
-    meta = _fetch_one_meta(bango)
-    if meta.get('cover') or meta.get('title'):
-        meta['_src'] = 'jav321'
-        return meta
-    if meta.get('_err'):
-        meta['_src'] = 'jav321'
-        return meta
-    # Neither found it; return javhoo's response (may be {} or have _err)
-    javhoo.setdefault('_src', 'javhoo')
-    return javhoo
+    1. /v1/movies/search?q=<term>  — cross-provider search
+    2. keep results whose normalized number equals the bango
+    3. fetch full info from the best-ranked provider (PROVIDER_PRIORITY)
+    4. backfill sparse fields from the runner-up provider when needed
+
+    Returns {} when not found, {'_err': msg} on network error."""
+    term = _mt_search_term(bango)
+    results, err = _metatube_get('/v1/movies/search', {'q': term})
+    if err:
+        return {'_err': err}
+    want = {_norm_num(term), _norm_num(bango)}
+    matches = [r for r in (results or []) if _norm_num(r.get('number')) in want]
+    if not matches:
+        return {}
+    matches.sort(key=lambda r: _provider_rank(r.get('provider')))
+
+    def full_info(res):
+        provider = urllib.parse.quote(res.get('provider', ''), safe='')
+        movie_id = urllib.parse.quote(res.get('id', ''), safe='')
+        info, e = _metatube_get(f'/v1/movies/{provider}/{movie_id}')
+        return info if (info and not e) else None
+
+    info = full_info(matches[0])
+    meta = _meta_from_info(info) if info else _meta_from_info(matches[0])
+
+    # Backfill sparse fields from the runner-up provider (one extra request,
+    # only when the winner is missing important data).
+    if len(matches) > 1 and not (meta['maker'] and meta['genres'] and meta['actresses']):
+        info2 = full_info(matches[1])
+        if info2:
+            m2 = _meta_from_info(info2)
+            for k in ('actresses', 'genres', 'maker', 'label', 'm_series',
+                      'director', 'summary', 'preview_images'):
+                if not meta.get(k):
+                    meta[k] = m2[k]
+            if not meta.get('score'):
+                meta['score'] = m2['score']
+
+    # Cheap backfills from compact search hits (no extra requests)
+    if not meta['actresses']:
+        for r in matches:
+            if r.get('actors'):
+                meta['actresses'] = r['actors']
+                break
+    if not meta['score']:
+        meta['score'] = max((r.get('score') or 0) for r in matches)
+
+    meta['_v'] = META_VERSION
+    return meta
 
 
 def load_meta_cache() -> dict:
@@ -922,120 +758,114 @@ def save_meta_cache(cache: dict) -> None:
     os.replace(tmp, path)   # atomic on POSIX; best-effort on Windows
 
 
-# Studios whose content is always uncensored — route to javhoo→avsox path.
-# classify.py marks all is_jav items as 'jav' (not 'uncensored'), so we
-# identify these by series prefix rather than by classify_cache.json.
-_UNCENSORED_JAV_SERIES = frozenset({
-    '1PONDO', 'CARIBBEANCOM', 'CARIBPR', 'HEYZO', '1000GIRI',
-    'GACHI', 'GACHIP', 'GACHIG',   # Gachinco (g-area)
-})
+# ─────────────────────────────────────────────
+# Actress avatars (MetaTube actor search → Gfriends images)
+# ─────────────────────────────────────────────
 
-
-def _load_uncensored_paths() -> set:
-    """Return the set of folder paths classified as 'uncensored' by classify.py.
-    This covers non-JAV folders (tokyo-hot, h0930, …) detected by classify rules.
-    JAV-coded items from known uncensored studios are handled separately via
-    _UNCENSORED_JAV_SERIES so classify.py's 'jav' auto-label doesn't hide them.
-    Returns an empty set if classify_cache.json doesn't exist yet."""
+def load_actress_cache() -> dict:
+    """actress_cache.json — keyed by actress name. {} entries are cached
+    misses so unknown names aren't re-queried every run."""
     here = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(here, CLASSIFY_CACHE_FILE)
+    path = os.path.join(here, ACTRESS_CACHE_FILE)
     try:
         with open(path, 'r', encoding='utf-8') as f:
-            cache = json.load(f)
-        return {p for p, cat in cache.items() if cat == 'uncensored'}
+            return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return set()
+        return {}
 
 
-def fill_missing_actresses(items: list, cache: dict) -> int:
-    """Re-fetch via javhoo for cached JAV items that have a title but no actresses.
+def save_actress_cache(cache: dict) -> None:
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(here, ACTRESS_CACHE_FILE)
+    tmp  = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
 
-    Run with:  python scan.py --fill-actresses
 
-    Some items were fetched from jav321 which had no actress data. This command
-    tries javhoo for those specific items and patches the cache in place.
-    Returns the number of entries updated."""
-    need = [
-        e for e in items
-        if e.get('is_jav') and e.get('bango')
-        and e['bango'] in cache
-        and cache[e['bango']].get('title')
-        and not cache[e['bango']].get('actresses')
-    ]
+def _fetch_one_actress(name: str) -> dict:
+    """Look up one actress on MetaTube. Returns {'avatar': url, 'images': [...]}
+    or {} when not found, {'_err': msg} on network error."""
+    results, err = _metatube_get('/v1/actors/search', {'q': name})
+    if err:
+        return {'_err': err}
+    if not results:
+        return {}
+    # Prefer exact name match, else first result
+    best = next((r for r in results if r.get('name') == name), results[0])
+    images = best.get('images') or []
+    if not images:
+        return {}
+    return {'avatar': images[0], 'images': images[:4],
+            'provider': best.get('provider', '')}
 
-    if not need:
-        print("  Nothing to do — all cached JAV items already have actress data.")
-        return 0
 
-    print(f"  Found {len(need)} items with title but no actresses — re-fetching via javhoo ...")
-    print("  Press Ctrl+C to stop early (progress is saved).")
-    updated = 0
+def enrich_actresses(items: list, all_meta: bool = False) -> dict:
+    """Fetch avatar images for actresses appearing in `items`
+    (up to ACTRESS_PER_RUN new lookups per run, or all with --all-meta).
+    Returns {name: avatar_url} for every actress with a cached avatar."""
+    cache = load_actress_cache()
+    names, seen = [], set()
+    for e in items:
+        for a in e.get('actresses') or []:
+            if a not in seen:
+                seen.add(a)
+                names.append(a)
+
+    missing = [n for n in names if n not in cache]
+    limit   = len(missing) if all_meta else min(len(missing), ACTRESS_PER_RUN)
+
+    if missing:
+        remaining = len(missing) - limit
+        print(f"  Fetching actress avatars: {limit}"
+              + (f"  [{remaining} more on next run]" if remaining else "") + " ...")
+        print("  Press Ctrl+C to stop early (progress is saved).")
     try:
-        for n, entry in enumerate(need, 1):
-            bango = entry['bango']
-            meta  = _fetch_one_meta_javhoo(bango)
-            if meta.get('actresses'):
-                cache[bango]['actresses'] = meta['actresses']
-                # Also patch cover if we had none before
-                if meta.get('cover') and not cache[bango].get('cover'):
-                    cache[bango]['cover'] = meta['cover']
-                save_meta_cache(cache)
-                updated += 1
-                names  = meta['actresses']
-                shown  = ', '.join(names[:2]) + ('…' if len(names) > 2 else '')
-                status = f"✓  [{shown}]"
-            elif meta.get('_err'):
-                status = f"✗  ({meta['_err'][:60]})"
-            elif meta.get('title') or meta.get('cover'):
-                # Page found but no actress credits listed on javhoo
-                status = '–  (page found, no actress credit on javhoo)'
-            elif meta == {}:
-                # Genuine 404 — not in javhoo's database
-                status = '–  (not on javhoo)'
-            else:
-                status = '–  (no data)'
-            print(f"  [{n}/{len(need)}] {status}  {bango}", flush=True)
-            if n < len(need):
+        for n, name in enumerate(missing[:limit], 1):
+            info = _fetch_one_actress(name)
+            if info.get('_err'):
+                print(f"  [{n}/{limit}] ✗ ({info['_err'][:50]})  {name}", flush=True)
+                continue   # network error — don't cache, retry next run
+            cache[name] = info          # {} miss cached so we don't retry forever
+            save_actress_cache(cache)
+            status = '✓' if info.get('avatar') else '– (no image)'
+            print(f"  [{n}/{limit}] {status}  {name}", flush=True)
+            if n < limit:
                 time.sleep(META_DELAY)
     except KeyboardInterrupt:
-        print(f"\n  Interrupted — {updated} updated, cache saved.")
+        print("\n  Interrupted — actress cache saved.")
 
-    print(f"  Done: {updated}/{len(need)} entries updated.")
-    return updated
+    return {n: cache[n]['avatar'] for n in names
+            if cache.get(n) and cache[n].get('avatar')}
 
 
 def enrich_with_meta(items: list, cache: dict, all_meta: bool = False) -> int:
-    """Fetch missing metadata (up to META_PER_RUN items per run, or all if all_meta=True).
-    • Censored JAV  →  javhoo.com → jav321.com (fallback)
-    • Uncensored JAV →  javhoo.com → avsox.click (fallback)
-    Saves cache after every successful fetch. Handles Ctrl+C gracefully.
+    """Fetch missing/outdated metadata via MetaTube (up to META_PER_RUN per run,
+    or all if all_meta=True). Entries cached before META_VERSION are re-fetched;
+    their legacy fields are kept as a fallback when MetaTube has no match.
+    Saves cache after every fetch. Handles Ctrl+C gracefully.
     Returns number of newly fetched items."""
-    uncensored = _load_uncensored_paths()
 
     def _needs_fetch(e):
-        return e.get('is_jav') and e.get('bango') and e['bango'] not in cache
+        if not (e.get('is_jav') and e.get('bango')):
+            return False
+        cached = cache.get(e['bango'])
+        return cached is None or cached.get('_v') != META_VERSION
 
-    need_fetch = [e for e in items if _needs_fetch(e)]
+    # De-duplicate bangos (flat packs can repeat one bango across items)
+    need, seen = [], set()
+    for e in items:
+        if _needs_fetch(e) and e['bango'] not in seen:
+            seen.add(e['bango'])
+            need.append(e['bango'])
+
     ok = fail = 0
-    total_needed = len(need_fetch)
+    total_needed = len(need)
     limit        = total_needed if all_meta else min(total_needed, META_PER_RUN)
-
-    def _is_uncensored(e: dict) -> bool:
-        """True when this item should use the uncensored fetch path (javhoo→avsox).
-        Covers: classify_cache 'uncensored' folder + known uncensored JAV series."""
-        if e.get('path') in uncensored:
-            return True
-        return e.get('series') in _UNCENSORED_JAV_SERIES
-
-    n_uncensored = sum(1 for e in need_fetch if _is_uncensored(e))
-    n_censored   = total_needed - n_uncensored
 
     if total_needed:
         remaining = total_needed - limit
-        parts = []
-        if n_censored:   parts.append(f"{n_censored} censored (javhoo→jav321)")
-        if n_uncensored: parts.append(f"{n_uncensored} uncensored (javhoo→avsox)")
-        print(f"  Fetching metadata: {', '.join(parts)}"
+        print(f"  Fetching metadata from MetaTube ({METATUBE_URL})"
               + (f"  [{remaining} more on next run]" if remaining else "") + " ...")
         print("  Press Ctrl+C to stop early (progress is saved).")
     else:
@@ -1043,33 +873,31 @@ def enrich_with_meta(items: list, cache: dict, all_meta: bool = False) -> int:
         print(f"  All metadata cached ({cached} items)")
 
     try:
-        for entry in need_fetch:
-            if ok + fail >= limit:
-                break
-            bango = entry['bango']
-            is_unc = _is_uncensored(entry)
-            meta   = _fetch_one_meta_uncensored(bango) if is_unc else _fetch_one_meta_censored(bango)
-            n      = ok + fail + 1
-            src    = meta.pop('_src', 'javhoo' if is_unc else 'jav321')
+        for bango in need[:limit]:
+            meta = _fetch_one_meta(bango)
+            n    = ok + fail + 1
 
-            if meta.get('cover') or meta.get('title'):
+            if meta.get('_err'):
+                fail += 1
+                status = f"✗ ({meta['_err'][:60]})"
+            elif meta:
                 cache[bango] = meta
                 save_meta_cache(cache)   # persist after every success
                 ok += 1
-                status = f'✓ [{src}]'
-                if meta.get('cover'):
-                    status += ' cover'
+                status = f"✓ [{meta.get('provider', '?')}]"
                 if meta.get('actresses'):
-                    status += f' [{", ".join(meta["actresses"][:2])}]'
-            elif meta.get('_err'):
-                fail += 1
-                status = f"✗ ({meta['_err'][:60]})"
+                    status += f" [{', '.join(meta['actresses'][:2])}]"
             else:
-                # Not found — cache the miss so we don't retry forever
-                cache[bango] = {}
+                # Not found on MetaTube — keep legacy fields (if any) as a
+                # fallback and stamp the version so we don't retry forever.
+                legacy = cache.get(bango) or {}
+                legacy['_v'] = META_VERSION
+                legacy['_notfound'] = True
+                cache[bango] = legacy
                 save_meta_cache(cache)
                 fail += 1
-                status = f'– (not on {src})'
+                had = legacy.get('title') or legacy.get('cover')
+                status = '– (not on MetaTube' + (', kept legacy data)' if had else ')')
 
             print(f"  [{n}/{limit}] {status}  {bango}", flush=True)
             if n < limit:
@@ -1081,14 +909,32 @@ def enrich_with_meta(items: list, cache: dict, all_meta: bool = False) -> int:
     if ok + fail:
         print(f"  Done: {ok} with metadata, {fail} not found/errors.")
 
-    # Apply cache to all items
+    # Apply cache to all items. Image URLs from hotlink-blocked hosts (JavBus)
+    # are rewritten to MetaTube proxy URLs here — the cache keeps the originals.
     for entry in items:
         bango = entry.get('bango')
         if bango and bango in cache:
             meta = cache[bango]
-            entry['cover']     = meta.get('cover', '')
-            entry['title']     = meta.get('title', '')
-            entry['actresses'] = meta.get('actresses', [])
+            prov = meta.get('provider', '')
+            pid  = meta.get('provider_id', '')
+            entry['cover']          = _usable_image(meta.get('cover', ''), prov, pid, 'backdrop')
+            entry['thumb']          = _usable_image(meta.get('thumb', ''), prov, pid, 'thumb')
+            entry['title']          = meta.get('title', '')
+            entry['actresses']      = meta.get('actresses', [])
+            entry['maker']          = meta.get('maker', '')
+            entry['label']          = meta.get('label', '')
+            entry['m_series']       = meta.get('m_series', '')
+            entry['genres']         = meta.get('genres', [])
+            entry['director']       = meta.get('director', '')
+            entry['summary']        = meta.get('summary', '')
+            entry['release_date']   = meta.get('release_date', '')
+            entry['runtime']        = meta.get('runtime', 0)
+            entry['score']          = meta.get('score', 0)
+            entry['homepage']       = meta.get('homepage', '')
+            entry['preview_images'] = [_usable_image(u, prov, pid, 'backdrop')
+                                       for u in meta.get('preview_images', [])]
+            entry['meta_provider']  = prov
+            entry['provider_id']    = pid
 
     return ok
 
@@ -1131,6 +977,9 @@ def main(skip_meta: bool = False, all_meta: bool = False):
 
     print(f"Processing {len(raw)} items ...")
     data = process_results(raw, ROOT_DIRS)
+    # Frontend uses this to build /v1/images/... fallback URLs when a
+    # provider blocks hotlinking (e.g. JavBus covers 403 outside their site).
+    data['metatube_url'] = METATUBE_URL.rstrip('/')
 
     # ── Write data.js immediately so the browser is usable right away ──
     _write_data_js(data)
@@ -1151,10 +1000,13 @@ def main(skip_meta: bool = False, all_meta: bool = False):
         print()
         return
 
-    # ── Enrich with jav321 metadata (cover / title / actresses) ──────
+    # ── Enrich with MetaTube metadata ─────────────────────────────────
     print("Enriching with metadata ...")
     meta_cache = load_meta_cache()
     fetched = enrich_with_meta(data['items'], meta_cache, all_meta=all_meta)
+
+    # ── Actress avatars (MetaTube actor search → Gfriends) ───────────
+    data['actresses'] = enrich_actresses(data['items'], all_meta=all_meta)
 
     # ── Always re-write data.js so cached metadata is never lost ─────
     # enrich_with_meta applies the full cache to every item; even if no
@@ -1171,109 +1023,64 @@ def main(skip_meta: bool = False, all_meta: bool = False):
 
 
 def test_meta_bango(bango: str) -> None:
-    """Fetch and print metadata for a single bango.
+    """Fetch and print MetaTube metadata for a single bango."""
+    term = _mt_search_term(bango)
+    print(f"Fetching metadata for: {bango}")
+    print(f"  Server      : {METATUBE_URL}")
+    print(f"  Search term : {term}")
 
-    Routing mirrors enrich_with_meta:
-      • Known uncensored studios (1PONDO, CARIB, HEYZO, FC2-PPV, …)
-        → javhoo.com first, avsox.click fallback
-      • All other bangos (MIDE, STARS, NHDTB, …)
-        → jav321.com first, javhoo.com fallback
-    """
-    series = extract_bango(bango)[1] or ''
-    is_unc_studio = series in _UNCENSORED_JAV_SERIES
+    results, err = _metatube_get('/v1/movies/search', {'q': term})
+    if err:
+        print(f"  Search error: {err}")
+        return
+    want = {_norm_num(term), _norm_num(bango)}
+    matches = [r for r in (results or []) if _norm_num(r.get('number')) in want]
+    print(f"  Search hits : {len(results or [])} total, {len(matches)} matching number")
+    for r in sorted(matches, key=lambda r: _provider_rank(r.get('provider'))):
+        print(f"    - {r.get('provider', '?'):<16} id={r.get('id')}  number={r.get('number')}")
 
-    if is_unc_studio:
-        print(f"Fetching metadata for: {bango}  (uncensored path: javhoo → avsox)")
-        print(f"  javhoo URL : {_javhoo_url(bango)}")
-        print(f"  avsox term : {_avsox_search_term(bango)}")
-        meta = _fetch_one_meta_uncensored(bango)
-        src  = meta.pop('_src', 'javhoo')
-    else:
-        print(f"Fetching metadata for: {bango}  (censored path: javhoo → jav321)")
-        print(f"  javhoo URL : {_javhoo_url(bango)}")
-        print(f"  jav321 ID  : {_jav321_id(bango)}")
-        meta = _fetch_one_meta_censored(bango)
-        src  = meta.pop('_src', 'javhoo')
-
+    meta = _fetch_one_meta(bango)
     if meta.get('_err'):
         print(f"  Error    : {meta['_err']}")
-    elif not (meta.get('cover') or meta.get('title')):
-        print(f"  Not found (tried {src})")
-    else:
-        print(f"  Source   : {src}")
-        print(f"  Title    : {meta.get('title', '(none)')}")
-        print(f"  Cover    : {meta.get('cover', '(none)')}")
-        print(f"  Actresses: {meta.get('actresses', [])}")
+        return
+    if not meta:
+        print("  Not found on MetaTube")
+        return
+    print(f"  Provider : {meta.get('provider')} (id={meta.get('provider_id')})")
+    print(f"  Title    : {meta.get('title') or '(none)'}")
+    print(f"  Date     : {meta.get('release_date', '')}   Runtime: {meta.get('runtime')} min   Score: {meta.get('score')}")
+    print(f"  Maker    : {meta.get('maker', '')}   Label: {meta.get('label', '')}   Series: {meta.get('m_series', '')}")
+    print(f"  Director : {meta.get('director', '')}")
+    print(f"  Genres   : {', '.join(meta.get('genres', []))}")
+    print(f"  Actresses: {meta.get('actresses', [])}")
+    print(f"  Cover    : {meta.get('cover') or '(none)'}")
+    print(f"  Previews : {len(meta.get('preview_images', []))} images")
 
 
 if __name__ == '__main__':
     args = sys.argv[1:]
-    if len(args) == 2 and args[0] == '--debug-javhoo':
-        # Fetch raw HTML from javhoo and show the star/cover snippets so you
-        # can verify the regexes match.  Useful when actress data is missing.
-        bango = args[1]
-        url   = _javhoo_url(bango)
-        print(f"URL: {url}")
-        headers = {'User-Agent': _META_UA, 'Accept-Language': 'ja,zh-TW;q=0.9'}
-        try:
-            html, _ = _http_fetch(url, headers)
-        except Exception as e:
-            print(f"Error: {e}")
-            sys.exit(1)
-        print(f"Page size: {len(html)} bytes")
-        # Show lines that look like actress/star/tag links
-        for label, kw in (('star href lines', 'star'), ('tag href lines', '/tag/')):
-            lines = [ln.strip() for ln in html.splitlines() if kw in ln and 'href' in ln]
-            print(f"\n--- {label} ({len(lines)}) ---")
-            for ln in lines[:20]:
-                print(' ', ln[:300])
-        # Show the <h3>演員</h3> field section specifically
-        m_act = re.search(r'<h3>演[員员][^<]*</h3>(.*?)</div>', html, re.DOTALL | re.IGNORECASE)
-        if m_act:
-            print(f"\n--- <h3>演員</h3> field ---")
-            print(m_act.group(0)[:500])
-        else:
-            # Fallback: first occurrence of 演員 in HTML (may be search form)
-            m_act2 = re.search(r'演[員员]', html)
-            if m_act2:
-                print(f"\n--- 演員 context (no <h3> found, raw context) ---")
-                print(html[m_act2.start() : m_act2.start() + 300])
-        # Show parsed result
-        print("\n--- parsed result ---")
-        result = _fetch_one_meta_javhoo(bango)
-        for k, v in result.items():
-            print(f"  {k}: {v}")
-    elif len(args) == 2 and args[0] in ('--test-meta', '--test-bango'):
+    if len(args) == 2 and args[0] in ('--test-meta', '--test-bango'):
         test_meta_bango(args[1])
     elif args == ['--skip-meta']:
         main(skip_meta=True)
     elif args == ['--all-meta']:
         main(all_meta=True)
-    elif args == ['--fill-actresses']:
-        # Re-fetch actress data from javhoo for cached items that have a title
-        # but empty actresses list (happens when jav321 had no actress info).
-        # Rewrites data.js with the patched cache applied.
-        print("Scanning collection ...")
-        cache  = load_meta_cache()
+    elif args == ['--export-bangos']:
+        # Dump the unique bango list for fetch_meta.py (run the fetch job on a
+        # cloud server instead of keeping this PC on for hours).
         search = ' | '.join(f'path:"{d}"' for d in ROOT_DIRS)
-        raw    = fetch_everything(search)
+        raw = fetch_everything(search)
         if not raw:
-            print("No results from Everything — cannot determine item list.")
+            print("No results from Everything.")
             sys.exit(1)
-        data = process_results(raw, ROOT_DIRS)
-        print()
-        updated = fill_missing_actresses(data['items'], cache)
-        if updated:
-            # Re-apply full cache to items so data.js reflects the patches
-            for entry in data['items']:
-                bango = entry.get('bango')
-                if bango and bango in cache:
-                    m = cache[bango]
-                    entry['cover']     = m.get('cover', '')
-                    entry['title']     = m.get('title', '')
-                    entry['actresses'] = m.get('actresses', [])
-            _write_data_js(data)
-            print(f"  {OUTPUT_FILE} updated.")
+        data   = process_results(raw, ROOT_DIRS)
+        bangos = sorted({e['bango'] for e in data['items']
+                         if e.get('is_jav') and e.get('bango')})
+        with open('bangos.txt', 'w', encoding='utf-8') as f:
+            f.write('\n'.join(bangos) + '\n')
+        print(f"bangos.txt written — {len(bangos)} unique bangos.")
+        print("Upload scan.py + fetch_meta.py + bangos.txt (+ meta_cache.json)")
+        print("to any machine with Python and run:  python fetch_meta.py")
     elif not args:
         main()
     else:
@@ -1281,6 +1088,6 @@ if __name__ == '__main__':
         print("  python scan.py                          # full scan + metadata (50 per run)")
         print("  python scan.py --all-meta               # full scan + fetch ALL missing metadata")
         print("  python scan.py --skip-meta              # fast scan, no metadata")
-        print("  python scan.py --fill-actresses         # patch missing actress data via javhoo")
-        print("  python scan.py --test-bango <BANGO>     # test metadata fetch for one bango")
-        print("  python scan.py --debug-javhoo <BANGO>   # dump raw javhoo HTML snippets for regex diagnosis")
+        print("  python scan.py --export-bangos          # write bangos.txt for fetch_meta.py (cloud)")
+        print("  python scan.py --test-bango <BANGO>     # test MetaTube fetch for one bango")
+        sys.exit(1)

@@ -31,8 +31,24 @@ let   browseOffset   = 0;
 let   browseObserver = null;
 let   clOffset       = 0;
 let   clObserver     = null;
-let actressSortKey = 'count';
-let actressSortAsc = false;
+let actressAvatars = {};     // name → avatar URL (from data.js, MetaTube/Gfriends)
+
+// ── Statistics dimension (Series code / Maker / Label / Genre / …) ───
+let statDim = 'series';
+
+const STAT_DIMS = {
+  series:   { label: 'Series (code)',   field: 'series',   get: i => i.series   ? [i.series]   : [] },
+  maker:    { label: 'Maker',           field: 'maker',    get: i => i.maker    ? [i.maker]    : [] },
+  label:    { label: 'Label',           field: 'label',    get: i => i.label    ? [i.label]    : [] },
+  genre:    { label: 'Genre',           field: 'genre',    get: i => i.genres || [] },
+  mseries:  { label: 'Series (meta)',   field: 'mseries',  get: i => i.m_series ? [i.m_series] : [] },
+  director: { label: 'Director',        field: 'director', get: i => i.director ? [i.director] : [] },
+};
+
+// ── Actress grid lazy-loading ─────────────────────────────────────────
+const ACTRESS_PAGE  = 40;
+let   actressOffset = 0;
+let   actressObserver = null;
 
 // ── Classifier state ──────────────────────────
 let classifyMap    = {};     // path → category (from classify_data.js)
@@ -87,7 +103,8 @@ function toggleSidebar() {
 }
 
 function onDataReady() {
-  allItems = appData.items || [];
+  allItems       = appData.items || [];
+  actressAvatars = appData.actresses || {};
 
   const s = appData.statistics || {};
   setText('scan-time',  fmtDate(appData.scan_time));
@@ -135,6 +152,15 @@ function onDataReady() {
     const name = tag.dataset.actress;
     if (name) filterByActress(name);
   }, true);   // capture phase so it fires before card's own listener
+
+  // Delegated click for metadata chips (maker / label / genre / series / director)
+  document.addEventListener('click', e => {
+    const chip = e.target.closest('.chip-link');
+    if (!chip) return;
+    e.stopPropagation();
+    const { field, value } = chip.dataset;
+    if (field && value) searchByField(field, value);
+  }, true);
 
   el('loading').classList.add('hidden');
   showView(currentView || 'dashboard');
@@ -216,6 +242,17 @@ function renderDashboard() {
   renderBarChart('chart-size', sizeEntries.map(([k]) => k),
     sizeEntries.map(([, v]) => +(v.size / 1e9).toFixed(1)), 'GB',
     sizeEntries.map(([k]) => k));
+
+  // Maker / Genre charts — computed client-side from MetaTube metadata
+  const makerRows = buildDimStats('maker')
+    .sort((a, b) => b.count - a.count).slice(0, 20);
+  renderBarChart('chart-maker', makerRows.map(r => r.series),
+    makerRows.map(r => r.count), '# videos', makerRows.map(r => r.series));
+
+  const genreRows = buildDimStats('genre')
+    .sort((a, b) => b.count - a.count).slice(0, 20);
+  renderBarChart('chart-genre', genreRows.map(r => r.series),
+    genreRows.map(r => r.count), '# videos', genreRows.map(r => r.series));
 }
 
 function renderBarChart(canvasId, labels, values, unit, colorKeys) {
@@ -270,20 +307,84 @@ function renderBarChart(canvasId, labels, values, unit, colorKeys) {
 
 function renderBrowse() { applyFilters(); }
 
+// ── Field-scoped search ─────────────────────────────────────────────
+// Supports tokens like  maker:S1  label:"S1 NO.1 STYLE"  genre:単体作品
+// actress:JULIA  series:MIDE  mseries:...  director:...  provider:JavBus
+// Remaining free text matches across every metadata field.
+const FIELD_GETTERS = {
+  maker:    i => i.maker || '',
+  label:    i => i.label || '',
+  genre:    i => (i.genres || []).join('\n'),
+  genres:   i => (i.genres || []).join('\n'),
+  actress:  i => (i.actresses || []).join('\n'),
+  series:   i => i.series || '',           // bango prefix (MIDE, SSNI, …)
+  mseries:  i => i.m_series || '',         // metadata series name
+  director: i => i.director || '',
+  provider: i => i.meta_provider || '',
+  bango:    i => i.bango || '',
+  title:    i => i.title || '',
+};
+
+function parseQuery(raw) {
+  const fields = [];
+  const free = raw.replace(/([a-z]+):"([^"]*)"|([a-z]+):(\S+)/gi, (m, f1, v1, f2, v2) => {
+    const f = (f1 || f2).toLowerCase();
+    if (FIELD_GETTERS[f]) { fields.push([f, (v1 ?? v2).toLowerCase()]); return ' '; }
+    return m;   // unknown prefix — treat as free text
+  }).trim().toLowerCase();
+  return { fields, free };
+}
+
+function itemMatchesQuery(item, q) {
+  for (const [f, v] of q.fields) {
+    if (!FIELD_GETTERS[f](item).toLowerCase().includes(v)) return false;
+  }
+  if (q.free) {
+    const hay = (item.name + ' ' + (item.bango || '') + ' ' + (item.title || '') + ' ' +
+                 (item.actresses || []).join(' ') + ' ' + (item.maker || '') + ' ' +
+                 (item.label || '') + ' ' + (item.m_series || '') + ' ' +
+                 (item.genres || []).join(' ') + ' ' + (item.director || '')).toLowerCase();
+    return hay.includes(q.free);
+  }
+  return true;
+}
+
+// ── MetaTube image proxy fallback ───────────────────────────────────
+// Some providers (JavBus, …) block hotlinked images with a Referer check.
+// When the original URL fails, we retry once through the MetaTube server's
+// public /v1/images endpoint, which fetches with proper headers.
+function mtImageUrl(item, kind) {   // kind: 'thumb' | 'primary' | 'backdrop'
+  const base = appData?.metatube_url;
+  if (!base || !item.meta_provider || !item.provider_id) return '';
+  return `${base}/v1/images/${kind}/` +
+         `${encodeURIComponent(item.meta_provider)}/${encodeURIComponent(item.provider_id)}`;
+}
+
+// Inline onerror handler for detail-panel images (cover / previews)
+function imgFallback(img) {
+  const fb = img.dataset.fbUrl;
+  if (fb && !img.dataset.fb) { img.dataset.fb = '1'; img.src = fb; }
+  else img.style.display = 'none';
+}
+
+// Jump to Browse pre-filtered on one metadata field (used by all chips)
+function searchByField(field, value) {
+  el('search-box').value = /\s/.test(value) ? `${field}:"${value}"` : `${field}:${value}`;
+  el('jav-only').checked = false;
+  showView('browse');
+}
+
 function applyFilters() {
   if (!allItems.length) return;
 
-  const query   = (el('search-box')?.value  || '').toLowerCase().trim();
-  const sort    = el('sort-select')?.value  || 'size-desc';
-  const javOnly = el('jav-only')?.checked   || false;
+  const rawQuery = (el('search-box')?.value  || '').trim();
+  const sort     = el('sort-select')?.value  || 'size-desc';
+  const javOnly  = el('jav-only')?.checked   || false;
+  const q        = parseQuery(rawQuery);
 
   let items = allItems.filter(item => {
     if (javOnly && !item.is_jav) return false;
-    if (query) {
-      const hay = (item.name + ' ' + (item.bango || '') + ' ' +
-                   (item.title || '') + ' ' + (item.actresses || []).join(' ')).toLowerCase();
-      return hay.includes(query);
-    }
+    if (rawQuery) return itemMatchesQuery(item, q);
     return true;
   });
 
@@ -291,6 +392,9 @@ function applyFilters() {
     switch (sort) {
       case 'size-desc':  return b.total_size - a.total_size;
       case 'size-asc':   return a.total_size - b.total_size;
+      case 'date-desc':  return (b.release_date || '').localeCompare(a.release_date || '');
+      case 'date-asc':   return (a.release_date || '9999').localeCompare(b.release_date || '9999');
+      case 'score-desc': return (b.score || 0) - (a.score || 0);
       case 'name-asc':   return a.name.localeCompare(b.name);
       case 'name-desc':  return b.name.localeCompare(a.name);
       case 'series-asc': return (a.series || 'zzz').localeCompare(b.series || 'zzz');
@@ -389,25 +493,20 @@ function createItemCard(item, idx = -1) {
   checkCol.appendChild(checkbox);
   card.appendChild(checkCol);
 
-  // Series badge
-  const badge = document.createElement('div');
-  badge.className = 'item-series-badge';
-  const series = item.series || '?';
-  badge.textContent = series.length > 7 ? series.slice(0, 7) + '…' : series;
-  badge.style.background   = item.is_jav ? seriesColor(series, 0.2)  : 'rgba(100,100,120,0.25)';
-  badge.style.color        = item.is_jav ? seriesColor(series, 1)    : '#7070a0';
-  badge.style.border       = `1px solid ${item.is_jav ? seriesColor(series, 0.45) : 'transparent'}`;
-  card.appendChild(badge);
-
-  // Cover thumbnail (embedded from metadata)
+  // Cover thumbnail (embedded from metadata) — takes the full left slot
   if (item.cover) {
     const thumb = document.createElement('img');
     thumb.className = 'item-thumb';
-    thumb.src = item.cover;
+    thumb.src = item.thumb || item.cover;
     thumb.alt = '';
     thumb.loading = 'lazy';
     thumb.referrerPolicy = 'no-referrer';   // bypass hotlink protection on image hosts
-    thumb.onerror = function() { this.style.display = 'none'; };
+    thumb.onerror = function() {
+      // Hotlink blocked (e.g. JavBus 403) → retry via MetaTube image proxy
+      const fb = mtImageUrl(item, 'thumb');
+      if (fb && !this.dataset.fb) { this.dataset.fb = '1'; this.src = fb; }
+      else this.style.display = 'none';
+    };
     card.appendChild(thumb);
   }
 
@@ -423,12 +522,21 @@ function createItemCard(item, idx = -1) {
       `</div>`
     : '';
 
+  // Metadata chip row: release date · maker · label · score
+  const chips = [];
+  if (item.release_date) chips.push(`<span class="meta-chip chip-date">📅 ${esc(item.release_date)}</span>`);
+  if (item.maker)  chips.push(`<span class="meta-chip chip-link" data-field="maker" data-value="${esc(item.maker)}" title="Browse maker">🏭 ${esc(item.maker)}</span>`);
+  if (item.label)  chips.push(`<span class="meta-chip chip-link" data-field="label" data-value="${esc(item.label)}" title="Browse label">🏷️ ${esc(item.label)}</span>`);
+  if (item.score)  chips.push(`<span class="meta-chip chip-score">★ ${(+item.score).toFixed(1)}</span>`);
+  const chipHtml = chips.length ? `<div class="item-chips">${chips.join('')}</div>` : '';
+
   const info = document.createElement('div');
   info.className = 'item-info';
   info.innerHTML = `
     <div class="item-bango">${esc(item.bango || '(no bango)')}</div>
     <div class="item-name" title="${esc(item.name)}">${esc(item.title || item.name)}</div>
     <div class="item-meta">${item.file_count} file(s) · ${item.video_count} video(s)</div>
+    ${chipHtml}
     ${actressHtml}
   `;
   card.appendChild(info);
@@ -463,26 +571,53 @@ function createItemCard(item, idx = -1) {
 // Statistics
 // ─────────────────────────────────────────────
 
+// Aggregate items along one metadata dimension (maker / label / genre / …)
+function buildDimStats(dim) {
+  const get = STAT_DIMS[dim].get;
+  const map = {};
+  allItems.forEach(item => {
+    if (!item.is_jav) return;
+    get(item).forEach(key => {
+      if (!map[key]) map[key] = { count: 0, size: 0 };
+      map[key].count++;
+      map[key].size += item.total_size || 0;
+    });
+  });
+  return Object.entries(map).map(([key, d]) => ({
+    series: key, count: d.count, size: d.size, size_human: bytesToHuman(d.size),
+  }));
+}
+
+function buildStatDimBar() {
+  const bar = el('stat-dim-bar');
+  if (!bar) return;
+  bar.innerHTML = '';
+  Object.entries(STAT_DIMS).forEach(([dim, def]) => {
+    const pill = document.createElement('button');
+    pill.className = 'cat-pill' + (dim === statDim ? ' active' : '');
+    pill.textContent = def.label;
+    pill.onclick = () => { statDim = dim; renderStatistics(); };
+    bar.appendChild(pill);
+  });
+}
+
 function renderStatistics() {
   if (!appData) return;
-  const sizeData  = appData.statistics.series_size  || {};
-  const countData = appData.statistics.series_count || {};
+  buildStatDimBar();
+  const colHeader = el('stat-dim-col');
+  if (colHeader) colHeader.textContent = STAT_DIMS[statDim].label;
 
-  let rows = Object.entries(countData).map(([series, count]) => ({
-    series,
-    count,
-    size:       sizeData[series]?.size       || 0,
-    size_human: sizeData[series]?.size_human || '?',
-  }));
+  let rows = buildDimStats(statDim);
 
   rows.sort((a, b) => {
     let cmp = 0;
-    if      (seriesSortKey === 'series') cmp = a.series.localeCompare(b.series);
+    if      (seriesSortKey === 'series') cmp = a.series.localeCompare(b.series, 'ja');
     else if (seriesSortKey === 'count')  cmp = a.count - b.count;
     else if (seriesSortKey === 'size')   cmp = a.size  - b.size;
     return seriesSortAsc ? cmp : -cmp;
   });
 
+  const field = STAT_DIMS[statDim].field;
   const tbody = el('series-body');
   tbody.innerHTML = '';
 
@@ -500,11 +635,7 @@ function renderStatistics() {
     `;
     tr.style.cursor = 'pointer';
     tr.title = `Click to browse ${row.series}`;
-    tr.addEventListener('click', () => {
-      el('jav-only').checked = false;
-      el('search-box').value = row.series;
-      showView('browse');
-    });
+    tr.addEventListener('click', () => searchByField(field, row.series));
     tbody.appendChild(tr);
   });
 }
@@ -524,67 +655,113 @@ function buildActressStats() {
   const map = {};
   allItems.forEach(item => {
     (item.actresses || []).forEach(a => {
-      if (!map[a]) map[a] = { count: 0, size: 0 };
-      map[a].count++;
-      map[a].size += item.total_size || 0;
+      if (!map[a]) map[a] = { count: 0, size: 0, makers: {}, genres: {} };
+      const d = map[a];
+      d.count++;
+      d.size += item.total_size || 0;
+      if (item.maker) d.makers[item.maker] = (d.makers[item.maker] || 0) + 1;
+      (item.genres || []).forEach(g => { d.genres[g] = (d.genres[g] || 0) + 1; });
     });
   });
+  const top = obj => Object.entries(obj).sort((a, b) => b[1] - a[1]).slice(0, 2).map(e => e[0]);
   return Object.entries(map).map(([name, d]) => ({
     name,
     count:      d.count,
     size:       d.size,
     size_human: bytesToHuman(d.size),
+    avatar:     actressAvatars[name] || '',
+    topMakers:  top(d.makers),
+    topGenres:  top(d.genres),
   }));
+}
+
+function disconnectActressObserver() {
+  if (actressObserver) { actressObserver.disconnect(); actressObserver = null; }
+}
+
+function createActressCard(row) {
+  const card = document.createElement('div');
+  card.className = 'actress-card';
+  card.title = `Browse items by ${row.name}`;
+
+  const avatarHtml = row.avatar
+    ? `<img class="actress-avatar" src="${esc(row.avatar)}" alt="" loading="lazy"
+         referrerpolicy="no-referrer"
+         onerror="this.outerHTML='<div class=&quot;actress-avatar placeholder&quot;>👤</div>'">`
+    : `<div class="actress-avatar placeholder">👤</div>`;
+
+  const makerHtml = row.topMakers.length
+    ? `<div class="actress-sub" title="${esc(row.topMakers.join(', '))}">🏭 ${esc(row.topMakers.join(' · '))}</div>` : '';
+  const genreHtml = row.topGenres.length
+    ? `<div class="actress-sub" title="${esc(row.topGenres.join(', '))}">🏷️ ${esc(row.topGenres.join(' · '))}</div>` : '';
+
+  card.innerHTML = `
+    ${avatarHtml}
+    <div class="actress-card-name">${esc(row.name)}</div>
+    <div class="actress-card-stats">${row.count} item${row.count > 1 ? 's' : ''} · ${row.size_human}</div>
+    ${makerHtml}
+    ${genreHtml}
+  `;
+  card.addEventListener('click', () => filterByActress(row.name));
+  return card;
 }
 
 function renderActress() {
   let rows = buildActressStats();
 
+  const sort = el('actress-sort')?.value || 'count-desc';
   rows.sort((a, b) => {
-    let cmp = 0;
-    if      (actressSortKey === 'name')  cmp = a.name.localeCompare(b.name, 'ja');
-    else if (actressSortKey === 'count') cmp = a.count - b.count;
-    else if (actressSortKey === 'size')  cmp = a.size  - b.size;
-    return actressSortAsc ? cmp : -cmp;
+    switch (sort) {
+      case 'size-desc': return b.size - a.size;
+      case 'name-asc':  return a.name.localeCompare(b.name, 'ja');
+      default:          return b.count - a.count;
+    }
   });
 
   const query = (el('actress-search')?.value || '').toLowerCase().trim();
   if (query) rows = rows.filter(r => r.name.toLowerCase().includes(query));
 
-  setText('actress-result-count', `${rows.length} actresses`);
+  const withAvatar = rows.filter(r => r.avatar).length;
+  setText('actress-result-count', `${rows.length} actresses · ${withAvatar} with photo`);
 
-  const tbody = el('actress-body');
-  if (!tbody) return;
-  tbody.innerHTML = '';
+  const grid = el('actress-grid');
+  if (!grid) return;
 
-  rows.forEach((row, idx) => {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td class="rank-cell">${idx + 1}</td>
-      <td class="series-cell">
-        <span class="actress-tag actress-link" data-actress="${esc(row.name)}"
-              title="Browse items by ${esc(row.name)}">${esc(row.name)}</span>
-      </td>
-      <td class="count-cell">${row.count}</td>
-      <td class="size-cell">${row.size_human}</td>
-    `;
-    tr.style.cursor = 'pointer';
-    tr.title = `Browse items by ${row.name}`;
-    tr.addEventListener('click', () => filterByActress(row.name));
-    tbody.appendChild(tr);
-  });
-}
+  // Lazy-render in pages (same pattern as Browse)
+  disconnectActressObserver();
+  actressOffset = 0;
+  grid.innerHTML = '';
 
-function sortActressTable(key) {
-  if (actressSortKey === key) actressSortAsc = !actressSortAsc;
-  else { actressSortKey = key; actressSortAsc = false; }
-  renderActress();
+  function appendNextPage() {
+    const end  = Math.min(actressOffset + ACTRESS_PAGE, rows.length);
+    const frag = document.createDocumentFragment();
+    for (let i = actressOffset; i < end; i++) frag.appendChild(createActressCard(rows[i]));
+    actressOffset = end;
+
+    const old = grid.querySelector('.browse-sentinel');
+    if (old) old.remove();
+
+    grid.appendChild(frag);
+
+    if (actressOffset < rows.length) {
+      const sentinel = document.createElement('div');
+      sentinel.className = 'browse-sentinel';
+      grid.appendChild(sentinel);
+      actressObserver = new IntersectionObserver(entries => {
+        if (entries[0].isIntersecting) {
+          disconnectActressObserver();
+          appendNextPage();
+        }
+      }, { rootMargin: '400px' });
+      actressObserver.observe(sentinel);
+    }
+  }
+
+  appendNextPage();
 }
 
 function filterByActress(name) {
-  el('search-box').value  = name;
-  el('jav-only').checked  = false;
-  showView('browse');
+  searchByField('actress', name);
 }
 
 
@@ -633,10 +810,20 @@ function closeDetail() {
     .forEach(c => c.classList.remove('is-selected'));
 }
 
+// One clickable field row for the detail metadata table ('' → hidden)
+function detailRow(label, value, field) {
+  if (!value) return '';
+  const v = field
+    ? `<span class="chip-link detail-field-link" data-field="${field}" data-value="${esc(value)}"
+         title="Browse ${label.toLowerCase()}">${esc(value)}</span>`
+    : esc(value);
+  return `<div class="detail-meta-row"><span class="dm-label">${label}</span><span class="dm-value">${v}</span></div>`;
+}
+
 function renderDetailShell(item) {
   const isMarked = markedItems.has(item.path);
 
-  // Build metadata block from embedded fields (populated by scan.py via javbus)
+  // Build metadata block from embedded fields (populated by scan.py via MetaTube)
   let metaHtml = '';
   if (item.is_jav && (item.cover || item.title || item.actresses?.length)) {
     const actressHtml = item.actresses?.length
@@ -644,17 +831,63 @@ function renderDetailShell(item) {
           `<span class="actress-tag actress-link" data-actress="${esc(a)}" title="Browse ${esc(a)}">${esc(a)}</span>`
         ).join('')}</div>`
       : '';
+
+    const genreHtml = item.genres?.length
+      ? `<div class="detail-genres">${item.genres.map(g =>
+          `<span class="genre-tag chip-link" data-field="genre" data-value="${esc(g)}" title="Browse genre">${esc(g)}</span>`
+        ).join('')}</div>`
+      : '';
+
+    const scoreStr   = item.score ? `${'★'.repeat(Math.round(item.score / 2))} ${(+item.score).toFixed(1)}` : '';
+    const runtimeStr = item.runtime ? `${item.runtime} min` : '';
+
+    const metaRows = [
+      detailRow('Released', item.release_date),
+      detailRow('Runtime',  runtimeStr),
+      detailRow('Maker',    item.maker,    'maker'),
+      detailRow('Label',    item.label,    'label'),
+      detailRow('Series',   item.m_series, 'mseries'),
+      detailRow('Director', item.director, 'director'),
+      detailRow('Score',    scoreStr),
+    ].join('');
+
+    const sourceHtml = item.homepage
+      ? `<div class="detail-meta-row"><span class="dm-label">Source</span><span class="dm-value">
+           <a href="${esc(item.homepage)}" target="_blank" rel="noopener">${esc(item.meta_provider || 'provider page')} ↗</a>
+         </span></div>`
+      : '';
+
+    const summaryHtml = item.summary
+      ? `<details class="detail-summary"><summary>Summary</summary><p>${esc(item.summary)}</p></details>`
+      : '';
+
+    const mtBase = mtImageUrl(item, 'backdrop');   // '' when no provider info
+    const previewHtml = item.preview_images?.length
+      ? `<div class="detail-section-title">Preview images</div>
+         <div class="preview-strip">${item.preview_images.map(u =>
+           `<img class="preview-thumb" src="${esc(u)}" alt="" loading="lazy"
+              referrerpolicy="no-referrer" onclick="openCoverLightbox(this.src)"
+              data-fb-url="${mtBase ? esc(mtBase + '?url=' + encodeURIComponent(u)) : ''}"
+              onerror="imgFallback(this)">`
+         ).join('')}</div>`
+      : '';
+
     metaHtml = `
       <div class="jav-info-card">
         ${item.cover ? `<img class="jav-cover" src="${esc(item.cover)}" alt="cover" loading="lazy"
           referrerpolicy="no-referrer"
+          data-fb-url="${esc(mtImageUrl(item, 'backdrop'))}"
           style="cursor:zoom-in" onclick="openCoverLightbox(this.src)"
-          onerror="this.style.display='none'">` : ''}
+          onerror="imgFallback(this)">` : ''}
         <div class="jav-meta">
           ${item.title ? `<div class="jav-title">${esc(item.title)}</div>` : ''}
+          <div class="detail-meta-table">${metaRows}${sourceHtml}</div>
+          ${genreHtml}
           ${actressHtml}
+          ${summaryHtml}
         </div>
-      </div>`;
+      </div>
+      ${previewHtml}`;
   }
 
   el('detail-body').innerHTML = `
@@ -1154,7 +1387,7 @@ function renderClList() {
     const catBadge = document.createElement('div');
     catBadge.className   = `cl-cat-badge ${cat}`;
     catBadge.textContent = (CL_ICONS[cat] ?? '') + ' ' + cat;
-    card.insertBefore(catBadge, card.children[1]);   // index 0 = checkbox, 1 = series badge
+    card.insertBefore(catBadge, card.children[1]);   // index 0 = checkbox, 1 = thumb/info
 
     // Override button — cycles category (session-only)
     const btn = document.createElement('button');
