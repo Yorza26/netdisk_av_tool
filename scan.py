@@ -633,23 +633,9 @@ def _meta_from_info(info: dict) -> dict:
 
 
 # Image hosts that reject hotlinking (Referer check) — the browser can never
-# load these directly, so data.js gets a MetaTube image-proxy URL instead.
+# load these directly, so scan.py prefers image URLs from other providers
+# (see _fetch_one_meta) and `--fix-covers` patches old cache entries.
 _HOTLINK_BLOCKED_RE = re.compile(r'https?://[^/]*javbus\.com/', re.I)
-
-
-def _usable_image(url: str, provider: str, provider_id: str, kind: str) -> str:
-    """Return `url` unchanged when it's browser-loadable, otherwise a MetaTube
-    /v1/images proxy URL (kind: 'thumb' | 'primary' | 'backdrop') that fetches
-    it server-side with proper headers."""
-    if not url or not _HOTLINK_BLOCKED_RE.match(url):
-        return url
-    if not (provider and provider_id):
-        return url   # can't build a proxy URL — leave it (frontend hides on error)
-    base = METATUBE_URL.rstrip('/')
-    return (f"{base}/v1/images/{kind}/"
-            f"{urllib.parse.quote(provider, safe='')}/"
-            f"{urllib.parse.quote(provider_id, safe='')}"
-            f"?url={urllib.parse.quote(url, safe='')}")
 
 
 def _fetch_one_meta(bango: str) -> dict:
@@ -701,6 +687,17 @@ def _fetch_one_meta(bango: str) -> dict:
                 break
     if not meta['score']:
         meta['score'] = max((r.get('score') or 0) for r in matches)
+
+    # Prefer hotlink-friendly image hosts (DMM/MGS) over blocked ones (JavBus).
+    # JavBus covers are re-hosted DMM artwork anyway, so another provider's
+    # search hit usually carries the same image on a browser-loadable host.
+    for key, alt_key in (('cover', 'cover_url'), ('thumb', 'thumb_url')):
+        if _HOTLINK_BLOCKED_RE.match(meta.get(key) or ''):
+            for r in matches:
+                alt = r.get(alt_key) or ''
+                if alt and not _HOTLINK_BLOCKED_RE.match(alt):
+                    meta[key] = alt
+                    break
 
     meta['_v'] = META_VERSION
     return meta
@@ -909,16 +906,13 @@ def enrich_with_meta(items: list, cache: dict, all_meta: bool = False) -> int:
     if ok + fail:
         print(f"  Done: {ok} with metadata, {fail} not found/errors.")
 
-    # Apply cache to all items. Image URLs from hotlink-blocked hosts (JavBus)
-    # are rewritten to MetaTube proxy URLs here — the cache keeps the originals.
+    # Apply cache to all items
     for entry in items:
         bango = entry.get('bango')
         if bango and bango in cache:
             meta = cache[bango]
-            prov = meta.get('provider', '')
-            pid  = meta.get('provider_id', '')
-            entry['cover']          = _usable_image(meta.get('cover', ''), prov, pid, 'backdrop')
-            entry['thumb']          = _usable_image(meta.get('thumb', ''), prov, pid, 'thumb')
+            entry['cover']          = meta.get('cover', '')
+            entry['thumb']          = meta.get('thumb', '')
             entry['title']          = meta.get('title', '')
             entry['actresses']      = meta.get('actresses', [])
             entry['maker']          = meta.get('maker', '')
@@ -931,10 +925,8 @@ def enrich_with_meta(items: list, cache: dict, all_meta: bool = False) -> int:
             entry['runtime']        = meta.get('runtime', 0)
             entry['score']          = meta.get('score', 0)
             entry['homepage']       = meta.get('homepage', '')
-            entry['preview_images'] = [_usable_image(u, prov, pid, 'backdrop')
-                                       for u in meta.get('preview_images', [])]
-            entry['meta_provider']  = prov
-            entry['provider_id']    = pid
+            entry['preview_images'] = meta.get('preview_images', [])
+            entry['meta_provider']  = meta.get('provider', '')
 
     return ok
 
@@ -977,9 +969,6 @@ def main(skip_meta: bool = False, all_meta: bool = False):
 
     print(f"Processing {len(raw)} items ...")
     data = process_results(raw, ROOT_DIRS)
-    # Frontend uses this to build /v1/images/... fallback URLs when a
-    # provider blocks hotlinking (e.g. JavBus covers 403 outside their site).
-    data['metatube_url'] = METATUBE_URL.rstrip('/')
 
     # ── Write data.js immediately so the browser is usable right away ──
     _write_data_js(data)
@@ -1081,6 +1070,49 @@ if __name__ == '__main__':
         print(f"bangos.txt written — {len(bangos)} unique bangos.")
         print("Upload scan.py + fetch_meta.py + bangos.txt (+ meta_cache.json)")
         print("to any machine with Python and run:  python fetch_meta.py")
+    elif args == ['--fix-covers']:
+        # One-time cache patch: entries whose cover/thumb sit on a hotlink-
+        # blocked host (JavBus) get replaced with the same artwork from a
+        # hotlink-friendly provider (DMM/MGS) found via a fresh search.
+        # Only tiny JSON responses go through Railway — no image traffic.
+        cache = load_meta_cache()
+        bad = [b for b, m in cache.items()
+               if _HOTLINK_BLOCKED_RE.match(m.get('cover') or '')
+               or _HOTLINK_BLOCKED_RE.match(m.get('thumb') or '')]
+        print(f"{len(bad)} cached entries have hotlink-blocked image URLs.")
+        if bad:
+            print("Press Ctrl+C to stop early (progress is saved).")
+        fixed = 0
+        try:
+            for n, bango in enumerate(bad, 1):
+                term = _mt_search_term(bango)
+                results, err = _metatube_get('/v1/movies/search', {'q': term})
+                if err:
+                    print(f"  [{n}/{len(bad)}] ✗ ({err})  {bango}", flush=True)
+                    continue
+                want = {_norm_num(term), _norm_num(bango)}
+                matches = [r for r in (results or [])
+                           if _norm_num(r.get('number')) in want]
+                changed = False
+                for key, alt_key in (('cover', 'cover_url'), ('thumb', 'thumb_url')):
+                    if _HOTLINK_BLOCKED_RE.match(cache[bango].get(key) or ''):
+                        for r in matches:
+                            alt = r.get(alt_key) or ''
+                            if alt and not _HOTLINK_BLOCKED_RE.match(alt):
+                                cache[bango][key] = alt
+                                changed = True
+                                break
+                if changed:
+                    fixed += 1
+                    save_meta_cache(cache)
+                status = '✓' if changed else '– (no alternative host found)'
+                print(f"  [{n}/{len(bad)}] {status}  {bango}", flush=True)
+                if n < len(bad):
+                    time.sleep(META_DELAY)
+        except KeyboardInterrupt:
+            print(f"\n  Interrupted — {fixed} patched, cache saved.")
+        print(f"Done: {fixed}/{len(bad)} patched."
+              " Run `python scan.py` to rebuild data.js.")
     elif not args:
         main()
     else:
@@ -1089,5 +1121,6 @@ if __name__ == '__main__':
         print("  python scan.py --all-meta               # full scan + fetch ALL missing metadata")
         print("  python scan.py --skip-meta              # fast scan, no metadata")
         print("  python scan.py --export-bangos          # write bangos.txt for fetch_meta.py (cloud)")
+        print("  python scan.py --fix-covers             # swap JavBus image URLs for DMM-hosted ones")
         print("  python scan.py --test-bango <BANGO>     # test MetaTube fetch for one bango")
         sys.exit(1)

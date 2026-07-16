@@ -1,0 +1,44 @@
+# GitHub Actions workflow for running fetch_meta.py in the cloud (free).
+#
+# Setup (once):
+#   1. Create a PRIVATE GitHub repo containing:
+#        scan.py  fetch_meta.py  bangos.txt  meta_cache.json  actress_cache.json
+#      (generate bangos.txt with:  python scan.py --export-bangos)
+#   2. Copy this file into the repo as:  .github/workflows/fix_covers.yml
+#   3. Repo Settings → Actions → General → Workflow permissions
+#      → "Read and write permissions"
+#
+# Run: repo → Actions → fix-covers → "Run workflow".
+# Progress is committed back even if the 6-hour job limit is hit — just run
+# it again; already-cached items are skipped. When finished, pull the repo
+# and copy meta_cache.json + actress_cache.json into your project folder.
+
+name: fix-covers
+
+on:
+  workflow_dispatch:        # manual trigger from the Actions tab
+  # schedule:               # optional: also run automatically every night
+  #   - cron: '0 18 * * *'  # 18:00 UTC = 02:00 UTC+8
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 600
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # stop 10 min before the job limit so the commit step always runs
+      - name: Fetch covers from MetaTube
+        run: timeout 35400 python scan.py --fix-covers || true
+
+      - name: Commit updated caches
+        run: |
+          git config user.name  "meta-bot"
+          git config user.email "meta-bot@users.noreply.github.com"
+          git add meta_cache.json
+          git commit -m "update cover cache [skip ci]" || echo "nothing new"
+          git push

@@ -349,24 +349,6 @@ function itemMatchesQuery(item, q) {
   return true;
 }
 
-// ── MetaTube image proxy fallback ───────────────────────────────────
-// Some providers (JavBus, …) block hotlinked images with a Referer check.
-// When the original URL fails, we retry once through the MetaTube server's
-// public /v1/images endpoint, which fetches with proper headers.
-function mtImageUrl(item, kind) {   // kind: 'thumb' | 'primary' | 'backdrop'
-  const base = appData?.metatube_url;
-  if (!base || !item.meta_provider || !item.provider_id) return '';
-  return `${base}/v1/images/${kind}/` +
-         `${encodeURIComponent(item.meta_provider)}/${encodeURIComponent(item.provider_id)}`;
-}
-
-// Inline onerror handler for detail-panel images (cover / previews)
-function imgFallback(img) {
-  const fb = img.dataset.fbUrl;
-  if (fb && !img.dataset.fb) { img.dataset.fb = '1'; img.src = fb; }
-  else img.style.display = 'none';
-}
-
 // Jump to Browse pre-filtered on one metadata field (used by all chips)
 function searchByField(field, value) {
   el('search-box').value = /\s/.test(value) ? `${field}:"${value}"` : `${field}:${value}`;
@@ -501,12 +483,7 @@ function createItemCard(item, idx = -1) {
     thumb.alt = '';
     thumb.loading = 'lazy';
     thumb.referrerPolicy = 'no-referrer';   // bypass hotlink protection on image hosts
-    thumb.onerror = function() {
-      // Hotlink blocked (e.g. JavBus 403) → retry via MetaTube image proxy
-      const fb = mtImageUrl(item, 'thumb');
-      if (fb && !this.dataset.fb) { this.dataset.fb = '1'; this.src = fb; }
-      else this.style.display = 'none';
-    };
+    thumb.onerror = function() { this.style.display = 'none'; };
     card.appendChild(thumb);
   }
 
@@ -874,14 +851,12 @@ function renderDetailShell(item) {
       ? `<details class="detail-summary"><summary>Summary</summary><p>${esc(item.summary)}</p></details>`
       : '';
 
-    const mtBase = mtImageUrl(item, 'backdrop');   // '' when no provider info
     const previewHtml = item.preview_images?.length
       ? `<div class="detail-section-title">Preview images</div>
          <div class="preview-strip">${item.preview_images.map(u =>
            `<img class="preview-thumb" src="${esc(u)}" alt="" loading="lazy"
               referrerpolicy="no-referrer" onclick="openPreviewLightbox(this)"
-              data-fb-url="${mtBase ? esc(mtBase + '?url=' + encodeURIComponent(u)) : ''}"
-              onerror="imgFallback(this)">`
+              onerror="this.style.display='none'">`
          ).join('')}</div>`
       : '';
 
@@ -889,9 +864,8 @@ function renderDetailShell(item) {
       <div class="jav-info-card">
         ${item.cover ? `<img class="jav-cover" src="${esc(item.cover)}" alt="cover" loading="lazy"
           referrerpolicy="no-referrer"
-          data-fb-url="${esc(mtImageUrl(item, 'backdrop'))}"
           style="cursor:zoom-in" onclick="openCoverLightbox(this.src)"
-          onerror="imgFallback(this)">` : ''}
+          onerror="this.style.display='none'">` : ''}
         <div class="jav-meta">
           ${item.title ? `<div class="jav-title">${esc(item.title)}</div>` : ''}
           <div class="detail-meta-table">${metaRows}${sourceHtml}</div>
