@@ -49,8 +49,8 @@ ROOT_DIRS = [
     r"E:\115\!NSFW\CenPack\Series",
     r"E:\115\!NSFW\CenPack\Actress",
     r"E:\115\!NSFW\4k",
-    r"E:\115\!NSFW\ISO",
-    r"E:\115\!NSFW\Anthology\Gachinco",
+    # r"E:\115\!NSFW\ISO",
+    # r"E:\115\!NSFW\Anthology\Gachinco",
 ]
 OUTPUT_FILE     = "data.js"
 META_CACHE_FILE     = "meta_cache.json"
