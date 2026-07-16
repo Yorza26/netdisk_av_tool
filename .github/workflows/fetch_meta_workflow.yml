@@ -23,7 +23,7 @@ on:
 jobs:
   fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 355                # stay under the 6 h hard limit
+    timeout-minutes: 600
     steps:
       - uses: actions/checkout@v4
 
@@ -33,7 +33,7 @@ jobs:
 
       # stop 10 min before the job limit so the commit step always runs
       - name: Fetch metadata from MetaTube
-        run: timeout 20400 python fetch_meta.py || true
+        run: timeout 35400 python fetch_meta.py || true
 
       - name: Commit updated caches
         run: |

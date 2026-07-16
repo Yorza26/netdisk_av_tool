@@ -758,6 +758,19 @@ function renderActress() {
   }
 
   appendNextPage();
+
+  // If we're returning to this tab with a saved scroll position, the lazily
+  // rendered first page may be too short for the browser to scroll back to it.
+  // Synchronously append pages until the content is tall enough.
+  const savedTop = viewScrollTop['actress'];
+  if (savedTop) {
+    const scroller = mainScrollEl();
+    while (actressOffset < rows.length &&
+           scroller.scrollHeight < savedTop + scroller.clientHeight) {
+      disconnectActressObserver();
+      appendNextPage();
+    }
+  }
 }
 
 function filterByActress(name) {
@@ -866,7 +879,7 @@ function renderDetailShell(item) {
       ? `<div class="detail-section-title">Preview images</div>
          <div class="preview-strip">${item.preview_images.map(u =>
            `<img class="preview-thumb" src="${esc(u)}" alt="" loading="lazy"
-              referrerpolicy="no-referrer" onclick="openCoverLightbox(this.src)"
+              referrerpolicy="no-referrer" onclick="openPreviewLightbox(this)"
               data-fb-url="${mtBase ? esc(mtBase + '?url=' + encodeURIComponent(u)) : ''}"
               onerror="imgFallback(this)">`
          ).join('')}</div>`
@@ -1011,12 +1024,39 @@ function updateDetailMarkBtn() {
 // Cover image lightbox
 // ─────────────────────────────────────────────
 
+let lightboxImages = [];   // src list for prev/next navigation
+let lightboxIndex  = -1;
+
 function openCoverLightbox(src) {
+  lightboxImages = [];
+  lightboxIndex  = -1;
+  showLightbox(src);
+}
+
+// Opened from a preview thumbnail: collect all thumbs in the strip
+// so the arrows can step through them.
+function openPreviewLightbox(imgEl) {
+  const strip = imgEl.closest('.preview-strip');
+  const thumbs = strip ? [...strip.querySelectorAll('.preview-thumb')] : [imgEl];
+  lightboxImages = thumbs.map(t => t.src);
+  lightboxIndex  = thumbs.indexOf(imgEl);
+  showLightbox(imgEl.src);
+}
+
+function showLightbox(src) {
   const lb  = el('cover-lightbox');
   const img = el('cover-lightbox-img');
   if (!lb || !img) return;
   img.src = src;
   lb.classList.remove('hidden');
+  lb.classList.toggle('has-nav', lightboxImages.length > 1);
+}
+
+function lightboxStep(delta) {
+  if (lightboxImages.length < 2 || lightboxIndex < 0) return;
+  lightboxIndex = (lightboxIndex + delta + lightboxImages.length) % lightboxImages.length;
+  const img = el('cover-lightbox-img');
+  if (img) img.src = lightboxImages[lightboxIndex];
 }
 
 function closeCoverLightbox() {
@@ -1024,9 +1064,13 @@ function closeCoverLightbox() {
   if (lb) lb.classList.add('hidden');
 }
 
-// Close lightbox on Escape
+// Lightbox keyboard: Escape closes, arrows navigate
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeCoverLightbox();
+  const lb = el('cover-lightbox');
+  if (!lb || lb.classList.contains('hidden')) return;
+  if (e.key === 'ArrowLeft')  { e.preventDefault(); lightboxStep(-1); }
+  if (e.key === 'ArrowRight') { e.preventDefault(); lightboxStep(1); }
 });
 
 

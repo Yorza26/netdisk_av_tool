@@ -189,8 +189,8 @@
         <div class="toolbar-controls">
           <input type="search" id="actress-search" placeholder="Search actress…" oninput="renderActress()" />
           <select id="actress-sort" onchange="renderActress()">
-            <option value="count-desc">Items ↓</option>
             <option value="size-desc">Total size ↓</option>
+            <option value="count-desc">Items ↓</option>
             <option value="name-asc">Name A→Z</option>
           </select>
         </div>
@@ -262,7 +262,11 @@
 
 <!-- ═══════════════════════════ COVER LIGHTBOX ══════════════════════════ -->
 <div id="cover-lightbox" class="cover-lightbox hidden" onclick="closeCoverLightbox()">
+  <button class="lightbox-arrow lightbox-prev" title="Previous (←)"
+    onclick="event.stopPropagation(); lightboxStep(-1)">&#10094;</button>
   <img id="cover-lightbox-img" src="" alt="cover" />
+  <button class="lightbox-arrow lightbox-next" title="Next (→)"
+    onclick="event.stopPropagation(); lightboxStep(1)">&#10095;</button>
 </div>
 
 <!-- ═══════════════════════════ JAVBUS OVERLAY ═══════════════════════════ -->
