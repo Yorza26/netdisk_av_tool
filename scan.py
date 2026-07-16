@@ -1089,6 +1089,9 @@ if __name__ == '__main__':
         fixed = 0
         try:
             for n, bango in enumerate(bad, 1):
+                if 'gachi' in bango.lower():
+                    print(f"  [{n}/{len(bad)}] – (skipping gachi)  {bango}", flush=True)
+                    continue
                 term = _mt_search_term(bango)
                 results, err = _metatube_get('/v1/movies/search', {'q': term})
                 if err:
