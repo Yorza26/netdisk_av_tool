@@ -23,7 +23,7 @@ on:
 jobs:
   fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 600
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
 
@@ -33,7 +33,7 @@ jobs:
 
       # stop 10 min before the job limit so the commit step always runs
       - name: Fetch covers from MetaTube
-        run: timeout 35400 python scan.py --fix-covers || true
+        run: timeout 14400 python scan.py --fix-covers || true
 
       - name: Commit updated caches
         run: |
