@@ -15,7 +15,7 @@ Optional AI genre classification via a local **Ollama** model.
 |---|---|
 | [Everything](https://www.voidtools.com/) | Must be running with HTTP server enabled |
 | Python 3.8+ | Standard library only — **no `pip install` needed** |
-| [MetaTube API server](https://github.com/metatube-community/metatube-sdk-go) | Self-hosted (e.g. Docker on Railway) — used **only during scans**, never while browsing |
+| [MetaTube API server](https://github.com/metatube-community/metatube-sdk-go) | Self-hosted (e.g. Docker on Railway) — used during scans + as a rare image fallback while browsing |
 | [Ollama](https://ollama.com/) + `gemma4:e4b` | **Optional** — only needed for `classify.py` |
 
 ---
@@ -120,7 +120,7 @@ File and folder links in the detail panel open via Everything's HTTP server, so 
 - Results are cached in `meta_cache.json` (per bango) and `actress_cache.json` (per name) — each is fetched only once
 - The cache is keyed by bango code, not by path — safe to add/remove `ROOT_DIRS` entries
 - Items MetaTube can't find keep any legacy metadata as a fallback and are marked so they aren't retried
-- **Images load directly from the original hosts (DMM/MGS…), never through the MetaTube server at browse time.** JavBus-hosted images are hotlink-blocked, so `scan.py` prefers the same artwork from a DMM-hosted provider; run `--fix-covers` once to patch older cache entries
+- **Images load directly from the original hosts (DMM/MGS…).** JavBus-hosted images are hotlink-blocked, so `scan.py` prefers the same artwork from a DMM-hosted provider (run `--fix-covers` once to patch older cache entries). If an image still fails at browse time, the UI retries it once through the MetaTube server's `/v1/images` proxy as a fallback
 
 ---
 

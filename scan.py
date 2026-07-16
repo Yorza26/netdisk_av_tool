@@ -927,6 +927,7 @@ def enrich_with_meta(items: list, cache: dict, all_meta: bool = False) -> int:
             entry['homepage']       = meta.get('homepage', '')
             entry['preview_images'] = meta.get('preview_images', [])
             entry['meta_provider']  = meta.get('provider', '')
+            entry['provider_id']    = meta.get('provider_id', '')
 
     return ok
 
@@ -969,6 +970,9 @@ def main(skip_meta: bool = False, all_meta: bool = False):
 
     print(f"Processing {len(raw)} items ...")
     data = process_results(raw, ROOT_DIRS)
+    # Frontend builds /v1/images/... fallback URLs from this when an image
+    # host blocks hotlinking (rare after --fix-covers; JavBus-only titles).
+    data['metatube_url'] = METATUBE_URL.rstrip('/')
 
     # ── Write data.js immediately so the browser is usable right away ──
     _write_data_js(data)
