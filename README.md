@@ -1,10 +1,10 @@
 # JAV Collection Manager
 
-Browse, manage, and classify your local JAV collection through a local web UI.  
-Reads file data from **Everything**, fetches covers · titles · actresses from **jav321.com** and **javhoo.com**.  
+Browse, manage, and classify your local JAV collection through a local web UI.
+Reads file data from **Everything**, fetches full metadata (title · cover · actresses · maker · label · series · genres · director · release date · runtime · score · summary · preview images) from a self-hosted **[MetaTube](https://github.com/metatube-community/metatube-sdk-go)** API server.
 Optional AI genre classification via a local **Ollama** model.
 
-**PC use:** open `index.html` directly — no server needed.  
+**PC use:** open `index.html` directly — no server needed.
 **iOS / LAN use:** run `serve.bat` (or `python serve.py`) and browse to the printed URL on your phone.
 
 ---
@@ -15,7 +15,7 @@ Optional AI genre classification via a local **Ollama** model.
 |---|---|
 | [Everything](https://www.voidtools.com/) | Must be running with HTTP server enabled |
 | Python 3.8+ | Standard library only — **no `pip install` needed** |
-| Internet access | For metadata fetch (jav321.com · javhoo.com · avsox.click) |
+| [MetaTube API server](https://github.com/metatube-community/metatube-sdk-go) | Self-hosted (e.g. Docker on Railway) — used **only during scans**, never while browsing |
 | [Ollama](https://ollama.com/) + `gemma4:e4b` | **Optional** — only needed for `classify.py` |
 
 ---
@@ -29,11 +29,11 @@ Optional AI genre classification via a local **Ollama** model.
 3. ✅ **Enable HTTP Server** (default port: **80**)
 4. Click OK
 
-> If port 80 is taken, change it to e.g. `8080` and update  
-> `EVERYTHING_PORT = 80` at the top of `scan.py` **and** pass the port to `serve.py`:  
+> If port 80 is taken, change it to e.g. `8080` and update
+> `EVERYTHING_PORT = 80` at the top of `scan.py` **and** pass the port to `serve.py`:
 > `python serve.py 8080 8080`
 
-### 2 — Set your collection roots
+### 2 — Set your collection roots and MetaTube server
 
 Edit the top of `scan.py`:
 
@@ -42,9 +42,15 @@ ROOT_DIRS = [
     r"E:\115\云下载",
     r"E:\115\!NSFW\4k",   # add as many folders as you like
 ]
+
+METATUBE_URL   = "https://your-metatube-server"   # self-hosted MetaTube API
+METATUBE_TOKEN = ""            # only if the server was started with -token
+PROVIDER_PRIORITY = ["FANZA", "MGS", "JavBus", ...]  # who wins on multi-hit
 ```
 
 You can add or remove directories any time — cached metadata is indexed by bango code, not by path, so it survives the change.
+
+See **`METATUBE_API.md`** for the full API reference of the MetaTube server.
 
 ---
 
@@ -56,8 +62,7 @@ You can add or remove directories any time — cached metadata is indexed by ban
 python scan.py
 ```
 
-Scans your collection, writes `data.js`, then fetches up to **50 missing covers** per run.  
-Each run adds another 50 until everything is covered.
+Scans your collection, writes `data.js`, then fetches up to **50 missing metadata records** and **100 actress avatars** per run. Each run adds another batch until everything is covered.
 
 **Step 2 — open the UI:**
 
@@ -70,14 +75,24 @@ Each run adds another 50 until everything is covered.
 
 | Command | What it does |
 |---|---|
-| `python scan.py` | Scan + fetch up to 50 new covers |
-| `python scan.py --all-meta` | Scan + fetch **all** missing covers in one go |
+| `python scan.py` | Scan + fetch up to 50 new metadata records |
+| `python scan.py --all-meta` | Scan + fetch **all** missing metadata + avatars in one go |
 | `python scan.py --skip-meta` | Scan only — no network calls, fastest |
-| `python scan.py --fill-actresses` | Patch actress data for items with a title but no actress (re-fetches via javhoo) |
-| `python scan.py --test-bango MIDE-332` | Test metadata fetch for a single bango |
+| `python scan.py --export-bangos` | Write `bangos.txt` so the fetch job can run in the cloud (see below) |
+| `python scan.py --fix-covers` | Swap hotlink-blocked (JavBus) image URLs in the cache for DMM-hosted ones |
+| `python scan.py --test-bango MIDE-332` | Test the MetaTube fetch for a single bango |
 
-> **Tip:** Run `--all-meta` once on a large collection, then use plain `scan.py` for day-to-day updates.  
+> **Tip:** Run `--all-meta` once on a large collection, then use plain `scan.py` for day-to-day updates.
 > Ctrl+C at any time — progress is saved to `meta_cache.json` and resumes on the next run.
+> Already-cached items are **never** re-fetched (bump `META_VERSION` in `scan.py` to force a full refresh).
+
+### Running the fetch job in the cloud
+
+The metadata fetch doesn't need your files or Everything — only the bango list and the cache. So the hours-long first migration can run on any machine with Python (a free GitHub Actions runner works well; see `fetch_meta_workflow.yml` for a ready-made workflow):
+
+1. **PC:** `python scan.py --export-bangos` → writes `bangos.txt`
+2. **Cloud:** put `scan.py` + `fetch_meta.py` + `bangos.txt` (+ existing caches) together, run `python fetch_meta.py`
+3. **PC:** copy `meta_cache.json` + `actress_cache.json` back, run `python scan.py` (instant — all from cache)
 
 ---
 
@@ -93,23 +108,19 @@ python serve.py 8080 8080    # viewer on :8080, Everything on :8080
 
 Or just double-click **`serve.bat`**.
 
-The terminal prints two URLs — one for the PC, one for your phone.  
+The terminal prints two URLs — one for the PC, one for your phone.
 File and folder links in the detail panel open via Everything's HTTP server, so you can stream video directly in Safari.
 
 ---
 
 ## How metadata works
 
-Covers, titles, and actress names are fetched and embedded directly into `data.js`.
+`scan.py` searches your MetaTube server (`/v1/movies/search`), keeps the hits whose number matches the bango, fetches full info from the best-ranked provider in `PROVIDER_PRIORITY`, and backfills missing fields (actresses, genres, score…) from the runner-up. Actress avatar images come from MetaTube's **Gfriends** actor provider.
 
-| Item type | Primary source | Fallback |
-|---|---|---|
-| Censored JAV | javhoo.com | jav321.com |
-| Uncensored JAV (1PONDO, HEYZO, CARIB, Gachinco…) | javhoo.com | avsox.click |
-
-- Results are cached in `meta_cache.json` — each bango is fetched only once
+- Results are cached in `meta_cache.json` (per bango) and `actress_cache.json` (per name) — each is fetched only once
 - The cache is keyed by bango code, not by path — safe to add/remove `ROOT_DIRS` entries
-- Items not found on any source show the folder name; no cover is shown
+- Items MetaTube can't find keep any legacy metadata as a fallback and are marked so they aren't retried
+- **Images load directly from the original hosts (DMM/MGS…), never through the MetaTube server at browse time.** JavBus-hosted images are hotlink-blocked, so `scan.py` prefers the same artwork from a DMM-hosted provider; run `--fix-covers` once to patch older cache entries
 
 ---
 
@@ -131,11 +142,11 @@ ollama pull gemma4:e4b
 
 ```
 python classify.py                  # rules first, then LLM for unmatched items
-python classify.py --rules-only     # rules only — no Ollama needed, fast
-python classify.py --all            # ignore cache, reclassify everything
+python classify.py --rules-only    # rules only — no Ollama needed, fast
+python classify.py --all           # ignore cache, reclassify everything
 ```
 
-Results are saved to `classify_cache.json` and exported to `classify_data.js` for the browser.  
+Results are saved to `classify_cache.json` and exported to `classify_data.js` for the browser.
 The **Classifier** tab shows all items with their genre, category filter pills, and stats. Items can be selected, marked for deletion, and opened in the detail panel — same as Browse.
 
 ---
@@ -144,16 +155,27 @@ The **Classifier** tab shows all items with their genre, category filter pills, 
 
 | View | What it shows |
 |---|---|
-| **Dashboard** | Total size · item counts · top-20 series by count and by GB |
-| **Browse** | All directories sorted by size; each card shows cover · title · actresses · lazy-loaded |
-| **Statistics** | Full series table, sortable by count or size; click a row → browse that series |
-| **Actresses** | All actresses ranked by item count / size; click a name → browse her items |
+| **Dashboard** | Total size · item counts · top-20 series / makers / genres charts |
+| **Browse** | All items sorted by size/date/score; cards show cover · title · maker · label · actresses · lazy-loaded |
+| **Statistics** | Sortable table switchable between Series code · Maker · Label · Genre · Series (meta) · Director; click a row → browse it |
+| **Actresses** | Avatar card grid with item count, size, top makers/genres; click a card → browse her items |
 | **Classifier** | Items grouped by genre; category filter pills · stats bar · select/mark/detail · lazy-loaded |
 | **Non-JAV** | Directories where no bango could be detected |
 
-**Mark for deletion** → marks items with a red border.  
-**Export list** → downloads a `.txt` with folder names (one `# name` per line).  
-**Multi-select** → check individual boxes or Shift+click to range-select; mark all at once.
+**Detail panel** → full metadata table (released · runtime · maker · label · series · director · score · source link), clickable genre chips, preview image strip with lightbox, collapsible summary.
+**Mark for deletion** → marks items with a red border; **Export list** → downloads a `.txt`.
+**Multi-select** → check boxes or Shift+click to range-select; mark all at once.
+
+### Search syntax (Browse)
+
+Free text matches name, bango, title, actress, maker, label, series, genres, and director. Field-scoped tokens narrow it down and can be combined (AND):
+
+```
+maker:S1  label:"S1 NO.1 STYLE"  genre:単体作品  actress:JULIA
+series:MIDE  mseries:交わる体液  director:ながしまん  provider:JavBus
+```
+
+Every chip in the UI (maker, label, genre, series, actress…) is clickable and jumps to the corresponding filtered search.
 
 ---
 
@@ -179,18 +201,22 @@ The **Classifier** tab shows all items with their genre, category filter pills, 
 
 ```
 jav_tool/
-├── index.html          ← open this in your browser
+├── index.html              ← open this in your browser
 ├── style.css
 ├── app.js
 ├── chart.js
-├── scan.py             ← scan + metadata fetch → writes data.js
-├── classify.py         ← genre classifier     → writes classify_data.js  (optional)
-├── serve.py            ← LAN HTTP server for iOS access
-├── serve.bat           ← double-click to start serve.py on Windows
-├── data.js             ← generated by scan.py        (gitignored)
-├── meta_cache.json     ← cover/title/actress cache   (gitignored)
-├── classify_cache.json ← genre classification cache  (gitignored)
-└── classify_data.js    ← generated by classify.py    (gitignored)
+├── scan.py                 ← scan + MetaTube metadata fetch → writes data.js
+├── fetch_meta.py           ← standalone fetcher for running the job in the cloud
+├── fetch_meta_workflow.yml ← ready-made GitHub Actions workflow for fetch_meta.py
+├── METATUBE_API.md         ← MetaTube API reference
+├── classify.py             ← genre classifier → writes classify_data.js  (optional)
+├── serve.py                ← LAN HTTP server for iOS access
+├── serve.bat               ← double-click to start serve.py on Windows
+├── data.js                 ← generated by scan.py           (gitignored)
+├── meta_cache.json         ← full metadata cache, per bango (gitignored)
+├── actress_cache.json      ← actress avatar cache, per name (gitignored)
+├── classify_cache.json     ← genre classification cache     (gitignored)
+└── classify_data.js        ← generated by classify.py       (gitignored)
 ```
 
 ---
@@ -200,8 +226,10 @@ jav_tool/
 | Problem | Fix |
 |---|---|
 | Page shows "Could not load data.js" | Run `python scan.py` first |
-| No covers showing | Run `python scan.py` (or `--all-meta`) with internet access |
-| Cover loads then disappears | Image host hotlink protection — usually resolves on reload |
+| No covers showing | Run `python scan.py` (or `--all-meta`) — check `METATUBE_URL` is reachable |
+| Covers broken for some items | Old cache entries with JavBus URLs — run `python scan.py --fix-covers`, then `python scan.py` |
+| Metadata wrong / from wrong provider | Adjust `PROVIDER_PRIORITY`, delete the bango's entry from `meta_cache.json`, re-run |
+| Force refresh of ALL metadata | Bump `META_VERSION` in `scan.py`, then `python scan.py --all-meta` |
 | Bango not detected | Check the Non-JAV view; rename the folder to include the bango |
 | Wrong bango | Rename the folder, delete its entry from `meta_cache.json`, re-run |
 | After adding new files | Re-run `python scan.py` and reload the page (F5) |
