@@ -261365,5 +261365,53 @@
     "provider": "JavBus",
     "provider_id": "YMDD-057",
     "_v": 2
+  },
+  "KIDM-748": {
+    "_v": 2,
+    "_notfound": true
+  },
+  "KIDM-455": {
+    "_v": 2,
+    "_notfound": true
+  },
+  "LOOTA-029": {
+    "title": "ロ●ータ 跡美しゅり",
+    "cover": "http://pics.dmm.co.jp//digital/video/5433loota00029/5433loota00029pl.jpg",
+    "thumb": "http://pics.dmm.co.jp/digital/video/5433loota00029/5433loota00029ps.jpg",
+    "actresses": [
+      "跡美しゅり"
+    ],
+    "maker": "スパークビジョン",
+    "label": "",
+    "m_series": "ロ●ータ",
+    "genres": [
+      "アイドル・芸能人",
+      "イメージビデオ",
+      "ハイビジョン",
+      "単体作品"
+    ],
+    "director": "",
+    "summary": "",
+    "release_date": "2020-08-05",
+    "runtime": 81,
+    "score": 0,
+    "homepage": "https://www.javbus.com/ja/LOOTA-029",
+    "preview_images": [
+      "https://pics.dmm.co.jp/digital/video/5433loota00029/5433loota00029jp-1.jpg",
+      "https://pics.dmm.co.jp/digital/video/5433loota00029/5433loota00029jp-2.jpg",
+      "https://pics.dmm.co.jp/digital/video/5433loota00029/5433loota00029jp-3.jpg",
+      "https://pics.dmm.co.jp/digital/video/5433loota00029/5433loota00029jp-4.jpg",
+      "https://pics.dmm.co.jp/digital/video/5433loota00029/5433loota00029jp-5.jpg",
+      "https://pics.dmm.co.jp/digital/video/5433loota00029/5433loota00029jp-6.jpg",
+      "https://pics.dmm.co.jp/digital/video/5433loota00029/5433loota00029jp-7.jpg",
+      "https://pics.dmm.co.jp/digital/video/5433loota00029/5433loota00029jp-8.jpg",
+      "https://pics.dmm.co.jp/digital/video/5433loota00029/5433loota00029jp-9.jpg",
+      "https://pics.dmm.co.jp/digital/video/5433loota00029/5433loota00029jp-10.jpg",
+      "https://pics.dmm.co.jp/digital/video/5433loota00029/5433loota00029jp-11.jpg",
+      "https://pics.dmm.co.jp/digital/video/5433loota00029/5433loota00029jp-12.jpg"
+    ],
+    "provider": "JavBus",
+    "provider_id": "LOOTA-029",
+    "_v": 2
   }
 }
